@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#111111" />
+  <title>LinnTrainer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="toolbar">
+      <div class="brand">LinnTrainer</div>
+
+      <button id="enableMidiButton" class="primary">Enable MIDI</button>
+
+      <label>
+        MIDI out
+        <select id="midiOutputSelect" disabled>
+          <option value="">No output</option>
+        </select>
+      </label>
+
+      <label>
+        Base
+        <select id="baseNoteSelect"></select>
+      </label>
+
+      <label>
+        Rows
+        <input id="rowsInput" type="number" min="1" max="16" value="8" inputmode="numeric" />
+      </label>
+
+      <label>
+        Columns
+        <input id="columnsInput" type="number" min="1" max="32" value="13" inputmode="numeric" />
+      </label>
+
+      <label>
+        Across
+        <input id="horizontalIntervalInput" type="number" min="-24" max="24" value="1" inputmode="numeric" />
+      </label>
+
+      <label>
+        Up
+        <input id="verticalIntervalInput" type="number" min="-24" max="24" value="5" inputmode="numeric" />
+      </label>
+
+      <button id="panicButton" class="secondary">Panic</button>
+    </header>
+
+    <section class="status-row">
+      <span id="midiStatus">MIDI not enabled</span>
+      <span>Student → ch 1</span>
+      <span>Teacher → ch 2</span>
+    </section>
+
+    <section id="gridViewport" class="grid-viewport" aria-label="Isomorphic MIDI grid">
+      <div id="padGrid" class="pad-grid"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
