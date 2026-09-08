@@ -109,6 +109,76 @@ function fitSquarePads() {
   els.padGrid.style.margin = "auto";
 }
 
+// MIDIWeb Browser exposes a Web MIDI compatibility layer whose MIDI port
+// collection is not always a native iterable Map. Convert several possible
+// collection shapes into a normal Array without spread syntax.
+function midiPortsToArray(collection) {
+  if (!collection) return [];
+
+  if (Array.isArray(collection)) {
+    return collection.filter(Boolean);
+  }
+
+  const ports = [];
+
+  if (typeof collection.forEach === "function") {
+    try {
+      collection.forEach(port => {
+        if (port && !ports.includes(port)) ports.push(port);
+      });
+      if (ports.length > 0 || collection.size === 0) return ports;
+    } catch (error) {
+      console.warn("MIDI port forEach enumeration failed", error);
+    }
+  }
+
+  if (typeof collection.values === "function") {
+    try {
+      const values = collection.values();
+
+      if (values && typeof values.next === "function") {
+        let item = values.next();
+        while (!item.done) {
+          if (item.value && !ports.includes(item.value)) ports.push(item.value);
+          item = values.next();
+        }
+        return ports;
+      }
+
+      if (Array.isArray(values)) {
+        return values.filter(Boolean);
+      }
+
+      if (values && typeof values.length === "number") {
+        for (let i = 0; i < values.length; i++) {
+          if (values[i]) ports.push(values[i]);
+        }
+        return ports;
+      }
+    } catch (error) {
+      console.warn("MIDI port values enumeration failed", error);
+    }
+  }
+
+  if (typeof collection.length === "number") {
+    for (let i = 0; i < collection.length; i++) {
+      if (collection[i]) ports.push(collection[i]);
+    }
+    return ports;
+  }
+
+  if (typeof collection === "object") {
+    for (const key of Object.keys(collection)) {
+      const value = collection[key];
+      if (value && typeof value === "object" && !ports.includes(value)) {
+        ports.push(value);
+      }
+    }
+  }
+
+  return ports;
+}
+
 async function enableMidi() {
   if (!navigator.requestMIDIAccess) {
     els.midiStatus.textContent = "This browser does not expose Web MIDI.";
@@ -119,11 +189,10 @@ async function enableMidi() {
     state.midiAccess = await navigator.requestMIDIAccess({ sysex: false });
     state.midiAccess.onstatechange = refreshMidiOutputs;
     refreshMidiOutputs();
-    els.midiStatus.textContent = "MIDI enabled — choose an output";
     els.enableMidiButton.textContent = "MIDI Enabled";
   } catch (error) {
     console.error(error);
-    els.midiStatus.textContent = `MIDI permission failed: ${error.message || error}`;
+    els.midiStatus.textContent = `MIDI setup failed: ${error.message || error}`;
   }
 }
 
@@ -141,41 +210,43 @@ function refreshMidiOutputs() {
     return;
   }
 
-  const outputs = [...state.midiAccess.outputs.values()];
+  const outputs = midiPortsToArray(state.midiAccess.outputs);
+
   for (const output of outputs) {
     const option = document.createElement("option");
-    option.value = output.id;
-    option.textContent = output.name || output.manufacturer || output.id;
+    option.value = String(output.id ?? output.name ?? "");
+    option.textContent = output.name || output.manufacturer || output.id || "MIDI output";
     els.midiOutputSelect.appendChild(option);
   }
 
   els.midiOutputSelect.disabled = outputs.length === 0;
 
-  const preferred = outputs.find(o => o.id === previousId) || outputs[0] || null;
+  const preferred = outputs.find(o => String(o.id ?? o.name ?? "") === String(previousId)) || outputs[0] || null;
   state.output = preferred;
-  els.midiOutputSelect.value = preferred?.id || "";
+  els.midiOutputSelect.value = preferred ? String(preferred.id ?? preferred.name ?? "") : "";
 
   if (preferred) {
-    els.midiStatus.textContent = `MIDI out: ${preferred.name || "selected output"}`;
+    els.midiStatus.textContent = `MIDI out: ${preferred.name || preferred.manufacturer || "selected output"}`;
   } else {
     els.midiStatus.textContent = "MIDI enabled, but no outputs were found";
   }
 }
 
 function setOutputById(id) {
-  state.output = state.midiAccess?.outputs.get(id) || null;
+  const outputs = midiPortsToArray(state.midiAccess?.outputs);
+  state.output = outputs.find(output => String(output.id ?? output.name ?? "") === String(id)) || null;
   els.midiStatus.textContent = state.output
-    ? `MIDI out: ${state.output.name || "selected output"}`
+    ? `MIDI out: ${state.output.name || state.output.manufacturer || "selected output"}`
     : "No MIDI output selected";
 }
 
 function sendNoteOn(note, channel = state.studentChannel, velocity = state.velocity) {
-  if (!state.output || note < 0 || note > 127) return;
+  if (!state.output || typeof state.output.send !== "function" || note < 0 || note > 127) return;
   state.output.send([0x90 | (channel & 0x0f), note & 0x7f, velocity & 0x7f]);
 }
 
 function sendNoteOff(note, channel = state.studentChannel) {
-  if (!state.output || note < 0 || note > 127) return;
+  if (!state.output || typeof state.output.send !== "function" || note < 0 || note > 127) return;
   state.output.send([0x80 | (channel & 0x0f), note & 0x7f, 0]);
 }
 
@@ -229,7 +300,7 @@ function stopAllNotes() {
   document.querySelectorAll(".pad.active").forEach(p => p.classList.remove("active"));
 
   // CC 123 = All Notes Off, sent to student and teacher channels.
-  if (state.output) {
+  if (state.output && typeof state.output.send === "function") {
     state.output.send([0xB0 | state.studentChannel, 123, 0]);
     state.output.send([0xB0 | state.teacherChannel, 123, 0]);
   }
