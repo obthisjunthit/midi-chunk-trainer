@@ -96,6 +96,16 @@
       <div id="chunkList" class="chunk-list"></div>
     </section>
 
+    <section class="fingering-panel">
+      <button id="fingeringModeButton" class="primary" disabled>Assign Pads</button>
+      <button id="previousStepButton" class="secondary" disabled>◀ Step</button>
+      <div id="stepReadout" class="step-readout">Select a chunk</div>
+      <button id="nextStepButton" class="secondary" disabled>Step ▶</button>
+      <div id="fingeringNotes" class="fingering-notes"></div>
+      <button id="clearStepButton" class="secondary" disabled>Clear Step</button>
+      <div id="fingeringStatus" class="fingering-status">Choose a saved chunk to assign exact pad locations.</div>
+    </section>
+
     <section class="status-row">
       <span id="midiStatus">MIDI not enabled</span>
       <span>Student → ch 1</span>
@@ -109,5 +119,6 @@
 
   <script src="app.js"></script>
   <script src="chunks.js"></script>
+  <script src="fingerings.js"></script>
 </body>
 </html>
