@@ -50,6 +50,28 @@
       <button id="panicButton" class="secondary">Panic</button>
     </header>
 
+    <section class="teacher-panel">
+      <label class="file-button">
+        <span>Load MIDI</span>
+        <input id="midiFileInput" type="file" accept=".mid,.midi,audio/midi,audio/x-midi" />
+      </label>
+      <div id="fileName" class="file-name">No MIDI loaded</div>
+      <button id="playButton" class="primary" disabled>Play Teacher</button>
+      <button id="pauseButton" class="secondary" disabled>Pause</button>
+      <button id="stopButton" class="secondary" disabled>Stop</button>
+      <label>
+        Speed
+        <select id="speedSelect">
+          <option value="0.5">50%</option>
+          <option value="0.75">75%</option>
+          <option value="1" selected>100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+        </select>
+      </label>
+      <div id="transportStatus" class="transport-status">Teacher ready on channel 2</div>
+    </section>
+
     <section class="status-row">
       <span id="midiStatus">MIDI not enabled</span>
       <span>Student → ch 1</span>
