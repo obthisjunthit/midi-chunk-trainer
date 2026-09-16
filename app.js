@@ -1,49 +1,43 @@
-const NOTE_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+const TOTAL_COLUMNS = 25;
+const VISIBLE_COLUMNS = 10;
+const ROWS = 8;
+const BASE_NOTE = 18; // F#0, LinnStrument 200 default lowest pitch
+const ROW_INTERVAL = 5; // fourths tuning
+const MIDI_CHANNEL = 0; // channel 1
+const VELOCITY = 100;
+
+// iPad 6th-gen 9.7-inch 4:3 active display, derived from the 9.7-inch diagonal.
+const IPAD_SCREEN_MM = { width: 197.104, height: 147.828 };
+const LINN_PAD_MM = 17;
+const LINN_GAP_MM = 2;
+
+const NOTE_NAMES = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"];
 
 const state = {
   midiAccess: null,
   output: null,
-  baseNote: 21,
-  rows: 8,
-  columns: 13,
-  horizontalInterval: 1,
-  verticalInterval: 5,
-  studentChannel: 0,
-  teacherChannel: 1,
-  velocity: 100,
+  columnOffset: 0,
+  labels: true,
   activePointers: new Map(),
   soundingCounts: new Map(),
-
-  teacherEvents: [],
-  teacherDuration: 0,
-  teacherPosition: 0,
-  teacherPlaying: false,
-  teacherStartedAt: 0,
-  teacherTimers: [],
-  teacherEndTimer: null,
-  speed: 1,
 };
 
 const els = {
+  controls: document.getElementById("controls"),
   enableMidiButton: document.getElementById("enableMidiButton"),
   midiOutputSelect: document.getElementById("midiOutputSelect"),
-  baseNoteSelect: document.getElementById("baseNoteSelect"),
-  rowsInput: document.getElementById("rowsInput"),
-  columnsInput: document.getElementById("columnsInput"),
-  horizontalIntervalInput: document.getElementById("horizontalIntervalInput"),
-  verticalIntervalInput: document.getElementById("verticalIntervalInput"),
-  panicButton: document.getElementById("panicButton"),
+  labelsButton: document.getElementById("labelsButton"),
+  fullScreenButton: document.getElementById("fullScreenButton"),
+  showControlsButton: document.getElementById("showControlsButton"),
   midiStatus: document.getElementById("midiStatus"),
-  gridViewport: document.getElementById("gridViewport"),
+  scaleStatus: document.getElementById("scaleStatus"),
+  windowStatus: document.getElementById("windowStatus"),
+  surfaceViewport: document.getElementById("surfaceViewport"),
+  surfaceStage: document.getElementById("surfaceStage"),
+  surfaceBadge: document.getElementById("surfaceBadge"),
   padGrid: document.getElementById("padGrid"),
-
-  midiFileInput: document.getElementById("midiFileInput"),
-  fileName: document.getElementById("fileName"),
-  playButton: document.getElementById("playButton"),
-  pauseButton: document.getElementById("pauseButton"),
-  stopButton: document.getElementById("stopButton"),
-  speedSelect: document.getElementById("speedSelect"),
-  transportStatus: document.getElementById("transportStatus"),
+  previousColumnsButton: document.getElementById("previousColumnsButton"),
+  nextColumnsButton: document.getElementById("nextColumnsButton"),
 };
 
 function midiNoteName(note) {
@@ -51,85 +45,97 @@ function midiNoteName(note) {
   return `${NOTE_NAMES[((note % 12) + 12) % 12]}${octave}`;
 }
 
-function formatTime(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60).toString().padStart(2, "0");
-  return `${mins}:${secs}`;
+function noteForCell(rowFromBottom, absoluteColumn) {
+  return BASE_NOTE + absoluteColumn + rowFromBottom * ROW_INTERVAL;
 }
 
-function populateBaseNotes() {
-  for (let note = 21; note <= 108; note++) {
-    const option = document.createElement("option");
-    option.value = String(note);
-    option.textContent = `${midiNoteName(note)} (${note})`;
-    if (note === state.baseNote) option.selected = true;
-    els.baseNoteSelect.appendChild(option);
+function stopAllNotes() {
+  for (const note of state.soundingCounts.keys()) {
+    sendNoteOff(note);
   }
-}
-
-function noteForCell(rowFromBottom, column) {
-  return state.baseNote
-    + column * state.horizontalInterval
-    + rowFromBottom * state.verticalInterval;
-}
-
-function isNaturalPitchClass(pc) {
-  return [0, 2, 4, 5, 7, 9, 11].includes(pc);
+  state.soundingCounts.clear();
+  state.activePointers.clear();
+  document.querySelectorAll(".pad.active").forEach(pad => pad.classList.remove("active"));
+  sendRaw([0xB0 | MIDI_CHANNEL, 123, 0]);
 }
 
 function buildGrid() {
-  stopStudentNotes();
+  stopAllNotes();
   els.padGrid.replaceChildren();
 
-  els.padGrid.style.gridTemplateColumns = `repeat(${state.columns}, 1fr)`;
-  els.padGrid.style.gridTemplateRows = `repeat(${state.rows}, 1fr)`;
+  for (let visualRow = 0; visualRow < ROWS; visualRow++) {
+    const rowFromBottom = ROWS - 1 - visualRow;
 
-  for (let visualRow = 0; visualRow < state.rows; visualRow++) {
-    const rowFromBottom = state.rows - 1 - visualRow;
-
-    for (let column = 0; column < state.columns; column++) {
-      const note = noteForCell(rowFromBottom, column);
-      const pad = document.createElement("div");
+    for (let visibleColumn = 0; visibleColumn < VISIBLE_COLUMNS; visibleColumn++) {
+      const absoluteColumn = state.columnOffset + visibleColumn;
+      const note = noteForCell(rowFromBottom, absoluteColumn);
+      const pad = document.createElement("button");
+      pad.type = "button";
       pad.className = "pad";
+      if (!state.labels) pad.classList.add("labels-off");
+      if (note % 12 === 0) pad.classList.add("c-note");
       pad.dataset.note = String(note);
       pad.dataset.row = String(rowFromBottom);
-      pad.dataset.column = String(column);
+      pad.dataset.column = String(absoluteColumn);
+      pad.setAttribute("aria-label", `${midiNoteName(note)}, row ${rowFromBottom + 1}, column ${absoluteColumn + 1}`);
 
-      if (note >= 0 && note <= 127) {
-        const pc = ((note % 12) + 12) % 12;
-        if (isNaturalPitchClass(pc)) pad.classList.add("natural");
-        if (pc === 0) pad.classList.add("c-note");
-        pad.innerHTML = `<span>${midiNoteName(note)}</span><span class="coord">${rowFromBottom + 1},${column + 1}</span>`;
-      } else {
-        pad.classList.add("out-of-range");
-        pad.textContent = "—";
-      }
-
+      const led = document.createElement("span");
+      led.className = "led";
+      const label = document.createElement("span");
+      label.className = "note-label";
+      label.textContent = midiNoteName(note);
+      pad.append(led, label);
       els.padGrid.appendChild(pad);
     }
   }
 
-  fitSquarePads();
+  updateWindowReadout();
 }
 
-function fitSquarePads() {
-  const rect = els.gridViewport.getBoundingClientRect();
-  const gap = 2;
-  const availableWidth = Math.max(0, rect.width - 16 - gap * (state.columns - 1));
-  const availableHeight = Math.max(0, rect.height - 16 - gap * (state.rows - 1));
-  const size = Math.floor(Math.min(availableWidth / state.columns, availableHeight / state.rows));
+function updateWindowReadout() {
+  const start = state.columnOffset + 1;
+  const end = state.columnOffset + VISIBLE_COLUMNS;
+  els.windowStatus.textContent = `Columns ${start}–${end} of ${TOTAL_COLUMNS}`;
+  els.surfaceBadge.textContent = `${start}–${end} / ${TOTAL_COLUMNS}`;
+  els.previousColumnsButton.disabled = state.columnOffset === 0;
+  els.nextColumnsButton.disabled = state.columnOffset >= TOTAL_COLUMNS - VISIBLE_COLUMNS;
+}
 
-  if (size <= 0) return;
+function moveWindow(delta) {
+  const next = Math.max(0, Math.min(TOTAL_COLUMNS - VISIBLE_COLUMNS, state.columnOffset + delta));
+  if (next === state.columnOffset) return;
+  state.columnOffset = next;
+  buildGrid();
+}
 
-  const width = size * state.columns + gap * (state.columns - 1);
-  const height = size * state.rows + gap * (state.rows - 1);
+function measureSurface() {
+  const rect = els.surfaceViewport.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
 
-  els.padGrid.style.width = `${width}px`;
-  els.padGrid.style.height = `${height}px`;
-  els.padGrid.style.gridTemplateColumns = `repeat(${state.columns}, ${size}px)`;
-  els.padGrid.style.gridTemplateRows = `repeat(${state.rows}, ${size}px)`;
-  els.padGrid.style.margin = "auto";
+  const screenW = Math.max(window.screen.width, window.screen.height);
+  const screenH = Math.min(window.screen.width, window.screen.height);
+  const pxPerMmWidth = screenW / IPAD_SCREEN_MM.width;
+  const pxPerMmHeight = screenH / IPAD_SCREEN_MM.height;
+  const pxPerMm = (pxPerMmWidth + pxPerMmHeight) / 2;
+
+  const idealPadPx = LINN_PAD_MM * pxPerMm;
+  const idealGapPx = LINN_GAP_MM * pxPerMm;
+  const idealWidth = VISIBLE_COLUMNS * idealPadPx + (VISIBLE_COLUMNS - 1) * idealGapPx;
+  const idealHeight = ROWS * idealPadPx + (ROWS - 1) * idealGapPx;
+
+  const fitScale = Math.min(1, rect.width / idealWidth, rect.height / idealHeight);
+  const padPx = idealPadPx * fitScale;
+  const gapPx = idealGapPx * fitScale;
+
+  document.documentElement.style.setProperty("--pad", `${padPx.toFixed(2)}px`);
+  document.documentElement.style.setProperty("--gap", `${gapPx.toFixed(2)}px`);
+
+  const zoom = window.visualViewport?.scale || 1;
+  const actualPadMm = padPx * zoom / pxPerMm;
+  const actualGapMm = gapPx * zoom / pxPerMm;
+  const percent = actualPadMm / LINN_PAD_MM * 100;
+
+  els.scaleStatus.textContent = `Pad ≈ ${actualPadMm.toFixed(1)} mm • gap ≈ ${actualGapMm.toFixed(1)} mm • ${percent.toFixed(0)}% scale`;
 }
 
 function midiPortsToArray(collection) {
@@ -137,16 +143,11 @@ function midiPortsToArray(collection) {
   if (Array.isArray(collection)) return collection.filter(Boolean);
 
   const ports = [];
-
   if (typeof collection.forEach === "function") {
     try {
-      collection.forEach(port => {
-        if (port && !ports.includes(port)) ports.push(port);
-      });
-      if (ports.length > 0 || collection.size === 0) return ports;
-    } catch (error) {
-      console.warn("MIDI port forEach enumeration failed", error);
-    }
+      collection.forEach(port => { if (port && !ports.includes(port)) ports.push(port); });
+      if (ports.length || collection.size === 0) return ports;
+    } catch (_) {}
   }
 
   if (typeof collection.values === "function") {
@@ -160,14 +161,7 @@ function midiPortsToArray(collection) {
         }
         return ports;
       }
-      if (Array.isArray(values)) return values.filter(Boolean);
-      if (values && typeof values.length === "number") {
-        for (let i = 0; i < values.length; i++) if (values[i]) ports.push(values[i]);
-        return ports;
-      }
-    } catch (error) {
-      console.warn("MIDI port values enumeration failed", error);
-    }
+    } catch (_) {}
   }
 
   if (typeof collection.length === "number") {
@@ -176,18 +170,16 @@ function midiPortsToArray(collection) {
   }
 
   if (typeof collection === "object") {
-    for (const key of Object.keys(collection)) {
-      const value = collection[key];
+    for (const value of Object.values(collection)) {
       if (value && typeof value === "object" && !ports.includes(value)) ports.push(value);
     }
   }
-
   return ports;
 }
 
 async function enableMidi() {
   if (!navigator.requestMIDIAccess) {
-    els.midiStatus.textContent = "This browser does not expose Web MIDI.";
+    els.midiStatus.textContent = "Web MIDI is unavailable in this browser.";
     return;
   }
 
@@ -196,14 +188,15 @@ async function enableMidi() {
     state.midiAccess.onstatechange = refreshMidiOutputs;
     refreshMidiOutputs();
     els.enableMidiButton.textContent = "MIDI Enabled";
+    els.enableMidiButton.disabled = true;
   } catch (error) {
-    console.error(error);
-    els.midiStatus.textContent = `MIDI setup failed: ${error.message || error}`;
+    els.midiStatus.textContent = `MIDI failed: ${error.message || error}`;
   }
 }
 
 function refreshMidiOutputs() {
-  const previousId = state.output?.id || els.midiOutputSelect.value;
+  const previous = state.output ? String(state.output.id ?? state.output.name ?? "") : "";
+  const outputs = midiPortsToArray(state.midiAccess?.outputs);
   els.midiOutputSelect.replaceChildren();
 
   const none = document.createElement("option");
@@ -211,39 +204,29 @@ function refreshMidiOutputs() {
   none.textContent = "No output";
   els.midiOutputSelect.appendChild(none);
 
-  if (!state.midiAccess) {
-    els.midiOutputSelect.disabled = true;
-    return;
-  }
-
-  const outputs = midiPortsToArray(state.midiAccess.outputs);
-
-  for (const output of outputs) {
+  outputs.forEach(output => {
     const option = document.createElement("option");
     option.value = String(output.id ?? output.name ?? "");
-    option.textContent = output.name || output.manufacturer || output.id || "MIDI output";
+    option.textContent = output.name || output.manufacturer || "MIDI output";
     els.midiOutputSelect.appendChild(option);
-  }
+  });
 
   els.midiOutputSelect.disabled = outputs.length === 0;
 
-  const preferred = outputs.find(o => String(o.id ?? o.name ?? "") === String(previousId)) || outputs[0] || null;
+  let preferred = outputs.find(output => String(output.id ?? output.name ?? "") === previous);
+  if (!preferred) preferred = outputs.find(output => /AUM/i.test(output.name || ""));
+  if (!preferred) preferred = outputs[0] || null;
+
   state.output = preferred;
   els.midiOutputSelect.value = preferred ? String(preferred.id ?? preferred.name ?? "") : "";
-
-  els.midiStatus.textContent = preferred
-    ? `MIDI out: ${preferred.name || preferred.manufacturer || "selected output"}`
-    : "MIDI enabled, but no outputs were found";
+  els.midiStatus.textContent = preferred ? `MIDI → ${preferred.name || "selected output"} • ch 1` : "MIDI enabled • no output found";
 }
 
-function setOutputById(id) {
-  stopTeacherPlayback(false);
-  stopStudentNotes();
+function selectOutput(id) {
+  stopAllNotes();
   const outputs = midiPortsToArray(state.midiAccess?.outputs);
   state.output = outputs.find(output => String(output.id ?? output.name ?? "") === String(id)) || null;
-  els.midiStatus.textContent = state.output
-    ? `MIDI out: ${state.output.name || state.output.manufacturer || "selected output"}`
-    : "No MIDI output selected";
+  els.midiStatus.textContent = state.output ? `MIDI → ${state.output.name || "selected output"} • ch 1` : "No MIDI output selected";
 }
 
 function sendRaw(bytes) {
@@ -251,23 +234,23 @@ function sendRaw(bytes) {
   state.output.send(bytes);
 }
 
-function sendNoteOn(note, channel = state.studentChannel, velocity = state.velocity) {
+function sendNoteOn(note) {
   if (note < 0 || note > 127) return;
-  sendRaw([0x90 | (channel & 0x0f), note & 0x7f, velocity & 0x7f]);
+  sendRaw([0x90 | MIDI_CHANNEL, note & 0x7f, VELOCITY]);
 }
 
-function sendNoteOff(note, channel = state.studentChannel) {
+function sendNoteOff(note) {
   if (note < 0 || note > 127) return;
-  sendRaw([0x80 | (channel & 0x0f), note & 0x7f, 0]);
+  sendRaw([0x80 | MIDI_CHANNEL, note & 0x7f, 0]);
 }
 
-function incrementSounding(note) {
+function incrementNote(note) {
   const count = state.soundingCounts.get(note) || 0;
   state.soundingCounts.set(note, count + 1);
   if (count === 0) sendNoteOn(note);
 }
 
-function decrementSounding(note) {
+function decrementNote(note) {
   const count = state.soundingCounts.get(note) || 0;
   if (count <= 1) {
     state.soundingCounts.delete(note);
@@ -277,14 +260,12 @@ function decrementSounding(note) {
   }
 }
 
-function padFromPoint(x, y) {
-  const el = document.elementFromPoint(x, y);
-  return el?.closest?.(".pad") || null;
+function padAtPoint(x, y) {
+  return document.elementFromPoint(x, y)?.closest?.(".pad") || null;
 }
 
-function pressPad(pointerId, pad) {
-  if (!pad || pad.classList.contains("out-of-range")) return;
-
+function pressPointer(pointerId, pad) {
+  if (!pad) return;
   const previous = state.activePointers.get(pointerId);
   if (previous?.pad === pad) return;
   if (previous) releasePointer(pointerId);
@@ -292,388 +273,87 @@ function pressPad(pointerId, pad) {
   const note = Number(pad.dataset.note);
   state.activePointers.set(pointerId, { pad, note });
   pad.classList.add("active");
-  incrementSounding(note);
+  incrementNote(note);
 }
 
 function releasePointer(pointerId) {
   const active = state.activePointers.get(pointerId);
   if (!active) return;
-
   active.pad.classList.remove("active");
-  decrementSounding(active.note);
+  decrementNote(active.note);
   state.activePointers.delete(pointerId);
 }
 
-function stopStudentNotes() {
-  for (const note of state.soundingCounts.keys()) sendNoteOff(note);
-  state.soundingCounts.clear();
-  state.activePointers.clear();
-  document.querySelectorAll(".pad.active").forEach(p => p.classList.remove("active"));
-  sendRaw([0xB0 | state.studentChannel, 123, 0]);
+function toggleLabels() {
+  state.labels = !state.labels;
+  els.labelsButton.textContent = state.labels ? "Labels On" : "Labels Off";
+  document.querySelectorAll(".pad").forEach(pad => pad.classList.toggle("labels-off", !state.labels));
 }
 
-function teacherAllNotesOff() {
-  sendRaw([0xB0 | state.teacherChannel, 64, 0]);
-  sendRaw([0xB0 | state.teacherChannel, 123, 0]);
-}
-
-function stopAllNotes() {
-  stopStudentNotes();
-  teacherAllNotesOff();
-}
-
-function readU32(view, offset) {
-  return view.getUint32(offset, false);
-}
-
-function readU16(view, offset) {
-  return view.getUint16(offset, false);
-}
-
-function readVarLen(bytes, cursor) {
-  let value = 0;
-  let count = 0;
-  while (cursor.pos < bytes.length && count < 4) {
-    const b = bytes[cursor.pos++];
-    value = (value << 7) | (b & 0x7f);
-    count++;
-    if ((b & 0x80) === 0) return value;
-  }
-  throw new Error("Invalid MIDI variable-length value");
-}
-
-function parseMidiFile(arrayBuffer) {
-  const bytes = new Uint8Array(arrayBuffer);
-  const view = new DataView(arrayBuffer);
-  if (bytes.length < 14 || String.fromCharCode(...bytes.slice(0, 4)) !== "MThd") {
-    throw new Error("Not a Standard MIDI File");
-  }
-
-  const headerLength = readU32(view, 4);
-  const format = readU16(view, 8);
-  const trackCount = readU16(view, 10);
-  const division = readU16(view, 12);
-
-  if (division & 0x8000) throw new Error("SMPTE-timed MIDI files are not supported yet");
-  if (![0, 1, 2].includes(format)) throw new Error(`Unsupported MIDI format ${format}`);
-
-  const ticksPerQuarter = division;
-  let offset = 8 + headerLength;
-  const channelEvents = [];
-  const tempoEvents = [{ tick: 0, microsPerQuarter: 500000 }];
-  let finalTick = 0;
-
-  for (let trackIndex = 0; trackIndex < trackCount; trackIndex++) {
-    if (offset + 8 > bytes.length || String.fromCharCode(...bytes.slice(offset, offset + 4)) !== "MTrk") {
-      throw new Error(`Missing MIDI track ${trackIndex + 1}`);
-    }
-
-    const trackLength = readU32(view, offset + 4);
-    const trackEnd = offset + 8 + trackLength;
-    const cursor = { pos: offset + 8 };
-    let tick = 0;
-    let runningStatus = null;
-
-    while (cursor.pos < trackEnd) {
-      tick += readVarLen(bytes, cursor);
-      finalTick = Math.max(finalTick, tick);
-
-      let status = bytes[cursor.pos++];
-      if (status < 0x80) {
-        if (runningStatus == null) throw new Error("Invalid running status in MIDI track");
-        cursor.pos--;
-        status = runningStatus;
-      } else if (status < 0xf0) {
-        runningStatus = status;
-      }
-
-      if (status === 0xff) {
-        runningStatus = null;
-        const metaType = bytes[cursor.pos++];
-        const len = readVarLen(bytes, cursor);
-        if (metaType === 0x51 && len === 3) {
-          const tempo = (bytes[cursor.pos] << 16) | (bytes[cursor.pos + 1] << 8) | bytes[cursor.pos + 2];
-          tempoEvents.push({ tick, microsPerQuarter: tempo });
-        }
-        cursor.pos += len;
-        continue;
-      }
-
-      if (status === 0xf0 || status === 0xf7) {
-        runningStatus = null;
-        const len = readVarLen(bytes, cursor);
-        cursor.pos += len;
-        continue;
-      }
-
-      const type = status & 0xf0;
-      const originalChannel = status & 0x0f;
-      let data1;
-      let data2;
-
-      switch (type) {
-        case 0x80:
-        case 0x90:
-        case 0xa0:
-        case 0xb0:
-        case 0xe0:
-          data1 = bytes[cursor.pos++];
-          data2 = bytes[cursor.pos++];
-          channelEvents.push({ tick, type, originalChannel, data1, data2 });
-          break;
-        case 0xc0:
-        case 0xd0:
-          data1 = bytes[cursor.pos++];
-          channelEvents.push({ tick, type, originalChannel, data1, data2: null });
-          break;
-        default:
-          throw new Error(`Unsupported MIDI status 0x${status.toString(16)}`);
-      }
-    }
-
-    offset = trackEnd;
-  }
-
-  tempoEvents.sort((a, b) => a.tick - b.tick);
-  const dedupedTempos = [];
-  for (const tempo of tempoEvents) {
-    if (dedupedTempos.length && dedupedTempos[dedupedTempos.length - 1].tick === tempo.tick) {
-      dedupedTempos[dedupedTempos.length - 1] = tempo;
-    } else {
-      dedupedTempos.push(tempo);
-    }
-  }
-
-  function ticksToSeconds(targetTick) {
-    let seconds = 0;
-    let previousTick = 0;
-    let microsPerQuarter = 500000;
-
-    for (const tempo of dedupedTempos) {
-      if (tempo.tick > targetTick) break;
-      if (tempo.tick > previousTick) {
-        seconds += ((tempo.tick - previousTick) * microsPerQuarter) / ticksPerQuarter / 1000000;
-      }
-      previousTick = tempo.tick;
-      microsPerQuarter = tempo.microsPerQuarter;
-    }
-
-    if (targetTick > previousTick) {
-      seconds += ((targetTick - previousTick) * microsPerQuarter) / ticksPerQuarter / 1000000;
-    }
-    return seconds;
-  }
-
-  channelEvents.sort((a, b) => a.tick - b.tick);
-  const events = channelEvents.map(event => ({ ...event, time: ticksToSeconds(event.tick) }));
-  return {
-    events,
-    duration: ticksToSeconds(finalTick),
-    format,
-    trackCount,
-    ticksPerQuarter,
-  };
-}
-
-function teacherBytesForEvent(event) {
-  const status = event.type | state.teacherChannel;
-  if (event.data2 == null) return [status, event.data1 & 0x7f];
-  return [status, event.data1 & 0x7f, event.data2 & 0x7f];
-}
-
-function clearTeacherTimers() {
-  for (const timer of state.teacherTimers) clearTimeout(timer);
-  state.teacherTimers = [];
-  if (state.teacherEndTimer != null) clearTimeout(state.teacherEndTimer);
-  state.teacherEndTimer = null;
-}
-
-function currentTeacherPosition() {
-  if (!state.teacherPlaying) return state.teacherPosition;
-  return Math.min(
-    state.teacherDuration,
-    state.teacherPosition + ((performance.now() - state.teacherStartedAt) / 1000) * state.speed
-  );
-}
-
-function updateTransportStatus(prefix = "") {
-  const pos = currentTeacherPosition();
-  const timeText = `${formatTime(pos)} / ${formatTime(state.teacherDuration)}`;
-  els.transportStatus.textContent = prefix ? `${prefix} — ${timeText}` : timeText;
-}
-
-function scheduleTeacherFrom(position) {
-  if (!state.output) {
-    els.transportStatus.textContent = "Choose a MIDI output first";
-    return;
-  }
-  if (!state.teacherEvents.length) return;
-
-  clearTeacherTimers();
-  state.teacherPosition = Math.max(0, Math.min(position, state.teacherDuration));
-  state.teacherStartedAt = performance.now();
-  state.teacherPlaying = true;
-  els.playButton.disabled = true;
-  els.pauseButton.disabled = false;
-  els.stopButton.disabled = false;
-  updateTransportStatus("Playing teacher");
-
-  for (const event of state.teacherEvents) {
-    if (event.time < state.teacherPosition) continue;
-    const delay = Math.max(0, ((event.time - state.teacherPosition) / state.speed) * 1000);
-    const timer = setTimeout(() => {
-      if (!state.teacherPlaying) return;
-      sendRaw(teacherBytesForEvent(event));
-      updateTransportStatus("Playing teacher");
-    }, delay);
-    state.teacherTimers.push(timer);
-  }
-
-  const remaining = Math.max(0, state.teacherDuration - state.teacherPosition);
-  state.teacherEndTimer = setTimeout(() => {
-    teacherAllNotesOff();
-    state.teacherPlaying = false;
-    state.teacherPosition = 0;
-    clearTeacherTimers();
-    els.playButton.disabled = false;
-    els.pauseButton.disabled = true;
-    els.stopButton.disabled = true;
-    updateTransportStatus("Finished");
-  }, (remaining / state.speed) * 1000 + 60);
-}
-
-function playTeacher() {
-  if (!state.teacherEvents.length) return;
-  scheduleTeacherFrom(state.teacherPosition >= state.teacherDuration ? 0 : state.teacherPosition);
-}
-
-function pauseTeacher() {
-  if (!state.teacherPlaying) return;
-  state.teacherPosition = currentTeacherPosition();
-  state.teacherPlaying = false;
-  clearTeacherTimers();
-  teacherAllNotesOff();
-  els.playButton.disabled = false;
-  els.pauseButton.disabled = true;
-  els.stopButton.disabled = false;
-  updateTransportStatus("Paused");
-}
-
-function stopTeacherPlayback(resetPosition = true) {
-  if (state.teacherPlaying) state.teacherPosition = currentTeacherPosition();
-  state.teacherPlaying = false;
-  clearTeacherTimers();
-  teacherAllNotesOff();
-  if (resetPosition) state.teacherPosition = 0;
-  els.playButton.disabled = state.teacherEvents.length === 0;
-  els.pauseButton.disabled = true;
-  els.stopButton.disabled = true;
-  updateTransportStatus(resetPosition ? "Stopped" : "Teacher halted");
-}
-
-async function loadMidiFile(file) {
-  if (!file) return;
-  stopTeacherPlayback(true);
-  els.fileName.textContent = `Loading ${file.name}…`;
-  els.transportStatus.textContent = "Reading MIDI locally…";
-
+async function enterSurfaceMode() {
+  document.body.classList.add("surface-mode");
+  requestAnimationFrame(measureSurface);
   try {
-    const buffer = await file.arrayBuffer();
-    const parsed = parseMidiFile(buffer);
-    state.teacherEvents = parsed.events;
-    state.teacherDuration = parsed.duration;
-    state.teacherPosition = 0;
-    els.fileName.textContent = file.name;
-    els.playButton.disabled = parsed.events.length === 0;
-    els.pauseButton.disabled = true;
-    els.stopButton.disabled = true;
-    els.transportStatus.textContent = `${parsed.trackCount} track${parsed.trackCount === 1 ? "" : "s"} • ${parsed.events.length} MIDI events • ${formatTime(parsed.duration)} • teacher ch 2`;
-  } catch (error) {
-    console.error(error);
-    state.teacherEvents = [];
-    state.teacherDuration = 0;
-    state.teacherPosition = 0;
-    els.fileName.textContent = "Could not load MIDI";
-    els.transportStatus.textContent = error.message || String(error);
-    els.playButton.disabled = true;
+    if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+      await document.documentElement.requestFullscreen();
+    }
+  } catch (_) {
+    // WKWebView-based browsers may reject the Fullscreen API; the app still hides its own controls.
   }
 }
+
+async function exitSurfaceMode() {
+  document.body.classList.remove("surface-mode");
+  try {
+    if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
+  } catch (_) {}
+  requestAnimationFrame(measureSurface);
+}
+
+els.enableMidiButton.addEventListener("click", enableMidi);
+els.midiOutputSelect.addEventListener("change", event => selectOutput(event.target.value));
+els.labelsButton.addEventListener("click", toggleLabels);
+els.fullScreenButton.addEventListener("click", enterSurfaceMode);
+els.showControlsButton.addEventListener("click", exitSurfaceMode);
+els.previousColumnsButton.addEventListener("click", () => moveWindow(-5));
+els.nextColumnsButton.addEventListener("click", () => moveWindow(5));
 
 els.padGrid.addEventListener("pointerdown", event => {
+  const pad = event.target.closest?.(".pad");
+  if (!pad) return;
   event.preventDefault();
-  els.padGrid.setPointerCapture?.(event.pointerId);
-  pressPad(event.pointerId, padFromPoint(event.clientX, event.clientY));
+  try { els.padGrid.setPointerCapture(event.pointerId); } catch (_) {}
+  pressPointer(event.pointerId, pad);
 });
 
 els.padGrid.addEventListener("pointermove", event => {
   if (!state.activePointers.has(event.pointerId)) return;
   event.preventDefault();
-  pressPad(event.pointerId, padFromPoint(event.clientX, event.clientY));
+  const pad = padAtPoint(event.clientX, event.clientY);
+  if (pad) pressPointer(event.pointerId, pad);
+  else releasePointer(event.pointerId);
 });
 
 for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"]) {
-  els.padGrid.addEventListener(eventName, event => releasePointer(event.pointerId));
+  els.padGrid.addEventListener(eventName, event => {
+    if (!state.activePointers.has(event.pointerId)) return;
+    event.preventDefault();
+    releasePointer(event.pointerId);
+  });
 }
 
-els.enableMidiButton.addEventListener("click", enableMidi);
-els.midiOutputSelect.addEventListener("change", event => setOutputById(event.target.value));
-els.panicButton.addEventListener("click", () => {
-  stopTeacherPlayback(true);
-  stopAllNotes();
-});
-
-els.midiFileInput.addEventListener("change", event => loadMidiFile(event.target.files?.[0]));
-els.playButton.addEventListener("click", playTeacher);
-els.pauseButton.addEventListener("click", pauseTeacher);
-els.stopButton.addEventListener("click", () => stopTeacherPlayback(true));
-els.speedSelect.addEventListener("change", event => {
-  const wasPlaying = state.teacherPlaying;
-  const position = currentTeacherPosition();
-  if (wasPlaying) {
-    state.teacherPosition = position;
-    state.teacherPlaying = false;
-    clearTeacherTimers();
-    teacherAllNotesOff();
+els.surfaceViewport.addEventListener("contextmenu", event => event.preventDefault());
+window.addEventListener("blur", stopAllNotes);
+document.addEventListener("visibilitychange", () => { if (document.hidden) stopAllNotes(); });
+window.addEventListener("resize", measureSurface);
+window.addEventListener("orientationchange", () => setTimeout(measureSurface, 150));
+window.visualViewport?.addEventListener("resize", measureSurface);
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && document.body.classList.contains("surface-mode")) {
+    // Keep the app's surface mode if the browser itself exits fullscreen.
+    requestAnimationFrame(measureSurface);
   }
-  state.speed = Number(event.target.value) || 1;
-  if (wasPlaying) scheduleTeacherFrom(position);
-  else updateTransportStatus("Speed changed");
 });
 
-els.baseNoteSelect.addEventListener("change", event => {
-  state.baseNote = Number(event.target.value);
-  buildGrid();
-});
-
-els.rowsInput.addEventListener("change", event => {
-  state.rows = Math.max(1, Math.min(16, Number(event.target.value) || 8));
-  event.target.value = state.rows;
-  buildGrid();
-});
-
-els.columnsInput.addEventListener("change", event => {
-  state.columns = Math.max(1, Math.min(32, Number(event.target.value) || 13));
-  event.target.value = state.columns;
-  buildGrid();
-});
-
-els.horizontalIntervalInput.addEventListener("change", event => {
-  state.horizontalInterval = Math.max(-24, Math.min(24, Number(event.target.value) || 0));
-  event.target.value = state.horizontalInterval;
-  buildGrid();
-});
-
-els.verticalIntervalInput.addEventListener("change", event => {
-  state.verticalInterval = Math.max(-24, Math.min(24, Number(event.target.value) || 0));
-  event.target.value = state.verticalInterval;
-  buildGrid();
-});
-
-window.addEventListener("resize", fitSquarePads);
-window.addEventListener("blur", stopStudentNotes);
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopStudentNotes();
-});
-
-populateBaseNotes();
 buildGrid();
+requestAnimationFrame(measureSurface);
