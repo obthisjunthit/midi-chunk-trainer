@@ -12,14 +12,11 @@
   <main id="app" class="app-shell">
     <header id="controls" class="controls">
       <div class="brand">LinnStrument iPad</div>
-
       <button id="enableMidiButton" class="primary">Enable MIDI</button>
 
       <label class="control-group">
         <span>MIDI out</span>
-        <select id="midiOutputSelect" disabled>
-          <option value="">No output</option>
-        </select>
+        <select id="midiOutputSelect" disabled><option value="">No output</option></select>
       </label>
 
       <div class="mode-switch" aria-label="Board display mode">
@@ -33,7 +30,6 @@
       </label>
       <button id="octaveDownButton" class="secondary compact" aria-label="Shift board down one octave">−12</button>
       <button id="octaveUpButton" class="secondary compact" aria-label="Shift board up one octave">+12</button>
-
       <button id="labelsButton" class="secondary">Labels On</button>
       <button id="fullScreenButton" class="secondary">Full Screen</button>
 
@@ -45,15 +41,33 @@
     </header>
 
     <section id="surfaceViewport" class="surface-viewport" aria-label="LinnStrument-style MIDI surface">
-      <button id="previousColumnsButton" class="edge-button edge-left" aria-label="Previous columns">‹</button>
+      <section id="analysisPanel" class="analysis-panel" aria-label="Pitch, piano, chord and interval visualizer">
+        <div id="pianoKeyboard" class="piano-keyboard" aria-label="Piano pitch visualizer"></div>
 
-      <div id="surfaceStage" class="surface-stage">
-        <div id="padGrid" class="pad-grid" role="application" aria-label="LinnStrument-style pad grid"></div>
+        <div class="theory-readout">
+          <div><span class="readout-label">Pitches</span><strong id="pitchReadout">—</strong></div>
+          <div><span class="readout-label">Chord</span><strong id="chordReadout">—</strong></div>
+          <div><span class="readout-label">Intervals</span><span id="intervalReadout">—</span></div>
+          <div><span class="readout-label">Alt names</span><span id="alternateReadout">—</span></div>
+        </div>
+
+        <div class="bundle-bar">
+          <button id="bundleModeButton" class="secondary">Bundle Select</button>
+          <button id="playBundleButton" class="primary" disabled>Play Bundle</button>
+          <button id="clearBundleButton" class="secondary" disabled>Clear</button>
+          <span id="bundleStatus">0 pads selected</span>
+        </div>
+      </section>
+
+      <div id="boardArea" class="board-area">
+        <button id="previousColumnsButton" class="edge-button edge-left" aria-label="Previous columns">‹</button>
+        <div id="surfaceStage" class="surface-stage">
+          <div id="padGrid" class="pad-grid" role="application" aria-label="LinnStrument-style pad grid"></div>
+        </div>
+        <button id="nextColumnsButton" class="edge-button edge-right" aria-label="Next columns">›</button>
+        <div id="surfaceBadge" class="surface-badge">1–10 / 25</div>
       </div>
 
-      <button id="nextColumnsButton" class="edge-button edge-right" aria-label="Next columns">›</button>
-
-      <div id="surfaceBadge" class="surface-badge">1–10 / 25</div>
       <button id="showControlsButton" class="show-controls" aria-label="Show controls">•••</button>
     </section>
   </main>
