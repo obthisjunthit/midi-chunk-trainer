@@ -1,0 +1,39 @@
+/* Show the same piano/theory/bundle tools in True Scale as in Full 200. */
+.analysis-panel {
+  display: flex !important;
+  flex-direction: column;
+}
+
+/* Keep the True Scale tools compact so the playable surface stays as large as possible. */
+body:not(.full-board) .analysis-panel {
+  padding: 4px 8px 4px;
+  gap: 3px;
+}
+
+body:not(.full-board) .piano-keyboard {
+  height: 46px;
+}
+
+body:not(.full-board) .theory-readout {
+  min-height: 28px;
+  font-size: 10px;
+  gap: 6px;
+}
+
+body:not(.full-board) .readout-label {
+  font-size: 8px;
+}
+
+body:not(.full-board) .bundle-bar {
+  min-height: 30px;
+}
+
+body:not(.full-board) .bundle-bar button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+body:not(.full-board) .bundle-bar #bundleStatus {
+  font-size: 10px;
+}
