@@ -1,22 +1,26 @@
 const TOTAL_COLUMNS = 25;
-const VISIBLE_COLUMNS = 10;
+const TRUE_SCALE_COLUMNS = 10;
 const ROWS = 8;
-const BASE_NOTE = 18; // F#0, LinnStrument 200 default lowest pitch
+const DEFAULT_BASE_NOTE = 18; // F#/Gb0, LinnStrument 200 default lowest pitch
+const MAX_BASE_NOTE = 68; // base + 24 columns + 7*5 semitones must stay <= 127
 const ROW_INTERVAL = 5; // fourths tuning
-const MIDI_CHANNEL = 0; // channel 1
+const MIDI_CHANNEL = 0; // MIDI channel 1
 const VELOCITY = 100;
 
 // iPad 6th-gen 9.7-inch 4:3 active display, derived from the 9.7-inch diagonal.
 const IPAD_SCREEN_MM = { width: 197.104, height: 147.828 };
 const LINN_PAD_MM = 17;
 const LINN_GAP_MM = 2;
+const LINN_PITCH_MM = 19;
 
 const NOTE_NAMES = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"];
 
 const state = {
   midiAccess: null,
   output: null,
+  mode: "trueScale", // trueScale | fullBoard
   columnOffset: 0,
+  baseNote: DEFAULT_BASE_NOTE,
   labels: true,
   activePointers: new Map(),
   soundingCounts: new Map(),
@@ -26,6 +30,11 @@ const els = {
   controls: document.getElementById("controls"),
   enableMidiButton: document.getElementById("enableMidiButton"),
   midiOutputSelect: document.getElementById("midiOutputSelect"),
+  trueScaleModeButton: document.getElementById("trueScaleModeButton"),
+  fullBoardModeButton: document.getElementById("fullBoardModeButton"),
+  baseNoteSelect: document.getElementById("baseNoteSelect"),
+  octaveDownButton: document.getElementById("octaveDownButton"),
+  octaveUpButton: document.getElementById("octaveUpButton"),
   labelsButton: document.getElementById("labelsButton"),
   fullScreenButton: document.getElementById("fullScreenButton"),
   showControlsButton: document.getElementById("showControlsButton"),
@@ -46,13 +55,48 @@ function midiNoteName(note) {
 }
 
 function noteForCell(rowFromBottom, absoluteColumn) {
-  return BASE_NOTE + absoluteColumn + rowFromBottom * ROW_INTERVAL;
+  return state.baseNote + absoluteColumn + rowFromBottom * ROW_INTERVAL;
+}
+
+function visibleColumns() {
+  return state.mode === "fullBoard" ? TOTAL_COLUMNS : TRUE_SCALE_COLUMNS;
+}
+
+function populateBaseNotes() {
+  els.baseNoteSelect.replaceChildren();
+  for (let note = 0; note <= MAX_BASE_NOTE; note++) {
+    const option = document.createElement("option");
+    option.value = String(note);
+    option.textContent = `${midiNoteName(note)} (${note})`;
+    if (note === state.baseNote) option.selected = true;
+    els.baseNoteSelect.appendChild(option);
+  }
+  updatePitchControls();
+}
+
+function updatePitchControls() {
+  els.baseNoteSelect.value = String(state.baseNote);
+  els.octaveDownButton.disabled = state.baseNote - 12 < 0;
+  els.octaveUpButton.disabled = state.baseNote + 12 > MAX_BASE_NOTE;
+}
+
+function setBaseNote(note) {
+  const next = Number(note);
+  if (!Number.isFinite(next) || next < 0 || next > MAX_BASE_NOTE) return;
+  stopAllNotes();
+  state.baseNote = next;
+  updatePitchControls();
+  buildGrid();
+}
+
+function shiftBoardOctave(semitones) {
+  const next = state.baseNote + semitones;
+  if (next < 0 || next > MAX_BASE_NOTE) return;
+  setBaseNote(next);
 }
 
 function stopAllNotes() {
-  for (const note of state.soundingCounts.keys()) {
-    sendNoteOff(note);
-  }
+  for (const note of state.soundingCounts.keys()) sendNoteOff(note);
   state.soundingCounts.clear();
   state.activePointers.clear();
   document.querySelectorAll(".pad.active").forEach(pad => pad.classList.remove("active"));
@@ -63,12 +107,27 @@ function buildGrid() {
   stopAllNotes();
   els.padGrid.replaceChildren();
 
+  const columns = visibleColumns();
+  document.documentElement.style.setProperty("--columns", String(columns));
+  document.documentElement.style.setProperty("--rows", String(ROWS));
+
+  if (state.mode === "fullBoard") {
+    state.columnOffset = 0;
+    document.body.classList.add("full-board");
+  } else {
+    state.columnOffset = Math.max(0, Math.min(TOTAL_COLUMNS - TRUE_SCALE_COLUMNS, state.columnOffset));
+    document.body.classList.remove("full-board");
+  }
+
   for (let visualRow = 0; visualRow < ROWS; visualRow++) {
     const rowFromBottom = ROWS - 1 - visualRow;
 
-    for (let visibleColumn = 0; visibleColumn < VISIBLE_COLUMNS; visibleColumn++) {
-      const absoluteColumn = state.columnOffset + visibleColumn;
+    for (let visibleColumn = 0; visibleColumn < columns; visibleColumn++) {
+      const absoluteColumn = state.mode === "fullBoard"
+        ? visibleColumn
+        : state.columnOffset + visibleColumn;
       const note = noteForCell(rowFromBottom, absoluteColumn);
+
       const pad = document.createElement("button");
       pad.type = "button";
       pad.className = "pad";
@@ -89,43 +148,88 @@ function buildGrid() {
     }
   }
 
+  updateModeControls();
   updateWindowReadout();
+  requestAnimationFrame(measureSurface);
+}
+
+function updateModeControls() {
+  const full = state.mode === "fullBoard";
+  els.trueScaleModeButton.classList.toggle("selected", !full);
+  els.fullBoardModeButton.classList.toggle("selected", full);
+  els.trueScaleModeButton.setAttribute("aria-pressed", String(!full));
+  els.fullBoardModeButton.setAttribute("aria-pressed", String(full));
+}
+
+function setMode(mode) {
+  if (!['trueScale', 'fullBoard'].includes(mode) || state.mode === mode) return;
+  stopAllNotes();
+  state.mode = mode;
+  buildGrid();
 }
 
 function updateWindowReadout() {
+  if (state.mode === "fullBoard") {
+    els.windowStatus.textContent = `Full board • 25 × 8 • 200 pads`;
+    els.surfaceBadge.textContent = `25 × 8 • 200`;
+    els.previousColumnsButton.disabled = true;
+    els.nextColumnsButton.disabled = true;
+    return;
+  }
+
   const start = state.columnOffset + 1;
-  const end = state.columnOffset + VISIBLE_COLUMNS;
+  const end = state.columnOffset + TRUE_SCALE_COLUMNS;
   els.windowStatus.textContent = `Columns ${start}–${end} of ${TOTAL_COLUMNS}`;
   els.surfaceBadge.textContent = `${start}–${end} / ${TOTAL_COLUMNS}`;
   els.previousColumnsButton.disabled = state.columnOffset === 0;
-  els.nextColumnsButton.disabled = state.columnOffset >= TOTAL_COLUMNS - VISIBLE_COLUMNS;
+  els.nextColumnsButton.disabled = state.columnOffset >= TOTAL_COLUMNS - TRUE_SCALE_COLUMNS;
 }
 
 function moveWindow(delta) {
-  const next = Math.max(0, Math.min(TOTAL_COLUMNS - VISIBLE_COLUMNS, state.columnOffset + delta));
+  if (state.mode !== "trueScale") return;
+  const next = Math.max(0, Math.min(TOTAL_COLUMNS - TRUE_SCALE_COLUMNS, state.columnOffset + delta));
   if (next === state.columnOffset) return;
   state.columnOffset = next;
   buildGrid();
+}
+
+function cssPixelsPerMm() {
+  const screenW = Math.max(window.screen.width, window.screen.height);
+  const screenH = Math.min(window.screen.width, window.screen.height);
+  const widthRatio = screenW / IPAD_SCREEN_MM.width;
+  const heightRatio = screenH / IPAD_SCREEN_MM.height;
+  return (widthRatio + heightRatio) / 2;
 }
 
 function measureSurface() {
   const rect = els.surfaceViewport.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
 
-  const screenW = Math.max(window.screen.width, window.screen.height);
-  const screenH = Math.min(window.screen.width, window.screen.height);
-  const pxPerMmWidth = screenW / IPAD_SCREEN_MM.width;
-  const pxPerMmHeight = screenH / IPAD_SCREEN_MM.height;
-  const pxPerMm = (pxPerMmWidth + pxPerMmHeight) / 2;
+  const columns = visibleColumns();
+  const availableWidth = Math.max(1, rect.width - 8);
+  const availableHeight = Math.max(1, rect.height - 8);
+  const pxPerMm = cssPixelsPerMm();
 
-  const idealPadPx = LINN_PAD_MM * pxPerMm;
-  const idealGapPx = LINN_GAP_MM * pxPerMm;
-  const idealWidth = VISIBLE_COLUMNS * idealPadPx + (VISIBLE_COLUMNS - 1) * idealGapPx;
-  const idealHeight = ROWS * idealPadPx + (ROWS - 1) * idealGapPx;
+  let padPx;
+  let gapPx;
 
-  const fitScale = Math.min(1, rect.width / idealWidth, rect.height / idealHeight);
-  const padPx = idealPadPx * fitScale;
-  const gapPx = idealGapPx * fitScale;
+  if (state.mode === "trueScale") {
+    const idealPadPx = LINN_PAD_MM * pxPerMm;
+    const idealGapPx = LINN_GAP_MM * pxPerMm;
+    const idealWidth = columns * idealPadPx + (columns - 1) * idealGapPx;
+    const idealHeight = ROWS * idealPadPx + (ROWS - 1) * idealGapPx;
+    const fitScale = Math.min(1, availableWidth / idealWidth, availableHeight / idealHeight);
+    padPx = idealPadPx * fitScale;
+    gapPx = idealGapPx * fitScale;
+  } else {
+    // Preserve the real LinnStrument 17 mm pad / 2 mm trough proportions,
+    // but uniformly shrink the entire 25 x 8 board until all 200 pads fit.
+    const boardWidthMm = columns * LINN_PAD_MM + (columns - 1) * LINN_GAP_MM;
+    const boardHeightMm = ROWS * LINN_PAD_MM + (ROWS - 1) * LINN_GAP_MM;
+    const pxPerBoardMm = Math.min(availableWidth / boardWidthMm, availableHeight / boardHeightMm);
+    padPx = LINN_PAD_MM * pxPerBoardMm;
+    gapPx = LINN_GAP_MM * pxPerBoardMm;
+  }
 
   document.documentElement.style.setProperty("--pad", `${padPx.toFixed(2)}px`);
   document.documentElement.style.setProperty("--gap", `${gapPx.toFixed(2)}px`);
@@ -133,9 +237,14 @@ function measureSurface() {
   const zoom = window.visualViewport?.scale || 1;
   const actualPadMm = padPx * zoom / pxPerMm;
   const actualGapMm = gapPx * zoom / pxPerMm;
+  const actualPitchMm = (padPx + gapPx) * zoom / pxPerMm;
   const percent = actualPadMm / LINN_PAD_MM * 100;
 
-  els.scaleStatus.textContent = `Pad ≈ ${actualPadMm.toFixed(1)} mm • gap ≈ ${actualGapMm.toFixed(1)} mm • ${percent.toFixed(0)}% scale`;
+  if (state.mode === "trueScale") {
+    els.scaleStatus.textContent = `True scale • pad ≈ ${actualPadMm.toFixed(1)} mm • spacing ≈ ${actualPitchMm.toFixed(1)} mm • ${percent.toFixed(0)}%`;
+  } else {
+    els.scaleStatus.textContent = `Full 200 • pad ≈ ${actualPadMm.toFixed(1)} mm • spacing ≈ ${actualPitchMm.toFixed(1)} mm • ${percent.toFixed(0)}%`;
+  }
 }
 
 function midiPortsToArray(collection) {
@@ -298,7 +407,7 @@ async function enterSurfaceMode() {
       await document.documentElement.requestFullscreen();
     }
   } catch (_) {
-    // WKWebView-based browsers may reject the Fullscreen API; the app still hides its own controls.
+    // WKWebView browsers may reject Fullscreen API; our own controls still hide.
   }
 }
 
@@ -312,6 +421,11 @@ async function exitSurfaceMode() {
 
 els.enableMidiButton.addEventListener("click", enableMidi);
 els.midiOutputSelect.addEventListener("change", event => selectOutput(event.target.value));
+els.trueScaleModeButton.addEventListener("click", () => setMode("trueScale"));
+els.fullBoardModeButton.addEventListener("click", () => setMode("fullBoard"));
+els.baseNoteSelect.addEventListener("change", event => setBaseNote(event.target.value));
+els.octaveDownButton.addEventListener("click", () => shiftBoardOctave(-12));
+els.octaveUpButton.addEventListener("click", () => shiftBoardOctave(12));
 els.labelsButton.addEventListener("click", toggleLabels);
 els.fullScreenButton.addEventListener("click", enterSurfaceMode);
 els.showControlsButton.addEventListener("click", exitSurfaceMode);
@@ -348,12 +462,9 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) stopA
 window.addEventListener("resize", measureSurface);
 window.addEventListener("orientationchange", () => setTimeout(measureSurface, 150));
 window.visualViewport?.addEventListener("resize", measureSurface);
-document.addEventListener("fullscreenchange", () => {
-  if (!document.fullscreenElement && document.body.classList.contains("surface-mode")) {
-    // Keep the app's surface mode if the browser itself exits fullscreen.
-    requestAnimationFrame(measureSurface);
-  }
-});
+window.visualViewport?.addEventListener("scroll", measureSurface);
+document.addEventListener("fullscreenchange", () => requestAnimationFrame(measureSurface));
 
+populateBaseNotes();
 buildGrid();
 requestAnimationFrame(measureSurface);
