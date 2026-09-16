@@ -1,0 +1,73 @@
+/* LinnStrument factory-style note lights:
+   C = Accent cyan, other C-major naturals = Main green, accidentals = off.
+   Played pads use the factory Played color: red. */
+
+.pad {
+  background: #24262a;
+  border-color: #34373d;
+}
+
+.pad .led {
+  width: max(5px, calc(var(--pad) * .085));
+  height: max(5px, calc(var(--pad) * .085));
+  background: transparent;
+  opacity: 0;
+  box-shadow: none;
+}
+
+.pad.linn-main .led {
+  opacity: 1;
+  background: #3ce05f;
+  box-shadow: 0 0 5px rgba(60,224,95,.9), 0 0 11px rgba(60,224,95,.4);
+}
+
+.pad.linn-accent .led {
+  opacity: 1;
+  background: #46dff2;
+  box-shadow: 0 0 5px rgba(70,223,242,.95), 0 0 12px rgba(70,223,242,.5);
+}
+
+.pad.linn-unlit .led {
+  opacity: 0;
+}
+
+/* Factory Played color is red. Keep the pad itself dark, like the hardware. */
+.pad.active,
+.pad.bundled.active {
+  background: #292b30;
+  color: #f1f2f4;
+  border-color: #6b3538;
+  transform: scale(.975);
+}
+
+.pad.active .led,
+.pad.bundled.active .led,
+.pad.linn-main.active .led,
+.pad.linn-accent.active .led,
+.pad.linn-unlit.active .led {
+  opacity: 1;
+  background: #ff3c43;
+  box-shadow: 0 0 6px rgba(255,60,67,1), 0 0 14px rgba(255,60,67,.65);
+}
+
+/* Bundle selection remains an app-only overlay without replacing the factory note color. */
+.pad.bundled {
+  background: #26323a;
+  border-color: #7ec8ff;
+  box-shadow: inset 0 0 0 1px #7ec8ff;
+}
+.pad.linn-main.bundled .led {
+  opacity: 1;
+  background: #3ce05f;
+  box-shadow: 0 0 5px rgba(60,224,95,.9), 0 0 11px rgba(60,224,95,.4);
+}
+.pad.linn-accent.bundled .led {
+  opacity: 1;
+  background: #46dff2;
+  box-shadow: 0 0 5px rgba(70,223,242,.95), 0 0 12px rgba(70,223,242,.5);
+}
+.pad.linn-unlit.bundled .led {
+  opacity: .45;
+  background: #7ec8ff;
+  box-shadow: 0 0 6px rgba(126,200,255,.6);
+}
