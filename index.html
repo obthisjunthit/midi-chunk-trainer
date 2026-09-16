@@ -22,6 +22,18 @@
         </select>
       </label>
 
+      <div class="mode-switch" aria-label="Board display mode">
+        <button id="trueScaleModeButton" class="mode-button selected">True Scale</button>
+        <button id="fullBoardModeButton" class="mode-button">Full 200</button>
+      </div>
+
+      <label class="control-group base-group">
+        <span>Bottom-left pitch</span>
+        <select id="baseNoteSelect"></select>
+      </label>
+      <button id="octaveDownButton" class="secondary compact" aria-label="Shift board down one octave">−12</button>
+      <button id="octaveUpButton" class="secondary compact" aria-label="Shift board up one octave">+12</button>
+
       <button id="labelsButton" class="secondary">Labels On</button>
       <button id="fullScreenButton" class="secondary">Full Screen</button>
 
@@ -36,7 +48,7 @@
       <button id="previousColumnsButton" class="edge-button edge-left" aria-label="Previous columns">‹</button>
 
       <div id="surfaceStage" class="surface-stage">
-        <div id="padGrid" class="pad-grid" role="application" aria-label="8 by 10 visible LinnStrument pad window"></div>
+        <div id="padGrid" class="pad-grid" role="application" aria-label="LinnStrument-style pad grid"></div>
       </div>
 
       <button id="nextColumnsButton" class="edge-button edge-right" aria-label="Next columns">›</button>
