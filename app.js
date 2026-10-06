@@ -39,7 +39,8 @@ const CHORD_TEMPLATES = [
 
 const state = {
   midiAccess: null,
-  output: null,
+  outputs: [null, null],
+  outputSelectionIds: [null, null],
   mode: "trueScale",
   columnOffset: 0,
   baseNote: DEFAULT_BASE_NOTE,
@@ -55,6 +56,7 @@ const els = {
   controls: document.getElementById("controls"),
   enableMidiButton: document.getElementById("enableMidiButton"),
   midiOutputSelect: document.getElementById("midiOutputSelect"),
+  midiOutputSelect2: document.getElementById("midiOutputSelect2"),
   trueScaleModeButton: document.getElementById("trueScaleModeButton"),
   fullBoardModeButton: document.getElementById("fullBoardModeButton"),
   baseNoteSelect: document.getElementById("baseNoteSelect"),
@@ -320,36 +322,94 @@ async function enableMidi() {
   }
 }
 
-function refreshMidiOutputs() {
-  const previous = state.output ? String(state.output.id ?? state.output.name ?? "") : "";
-  const outputs = midiPortsToArray(state.midiAccess?.outputs);
-  els.midiOutputSelect.replaceChildren();
+function midiOutputId(output) {
+  return output ? String(output.id ?? output.name ?? "") : "";
+}
+
+function populateMidiOutputSelect(select, outputs, selectedId) {
+  select.replaceChildren();
   const none = document.createElement("option");
   none.value = "";
   none.textContent = "No output";
-  els.midiOutputSelect.appendChild(none);
+  select.appendChild(none);
   outputs.forEach(output => {
     const option = document.createElement("option");
-    option.value = String(output.id ?? output.name ?? "");
+    option.value = midiOutputId(output);
     option.textContent = output.name || output.manufacturer || "MIDI output";
-    els.midiOutputSelect.appendChild(option);
+    select.appendChild(option);
   });
-  els.midiOutputSelect.disabled = outputs.length === 0;
-  let preferred = outputs.find(output => String(output.id ?? output.name ?? "") === previous);
-  if (!preferred) preferred = outputs.find(output => /AUM/i.test(output.name || ""));
-  if (!preferred) preferred = outputs[0] || null;
-  state.output = preferred;
-  els.midiOutputSelect.value = preferred ? String(preferred.id ?? preferred.name ?? "") : "";
-  els.midiStatus.textContent = preferred ? `MIDI → ${preferred.name || "selected output"} • ch 1` : "MIDI enabled • no output found";
+  select.disabled = outputs.length === 0;
+  select.value = selectedId || "";
 }
 
-function selectOutput(id) {
+function updateMidiStatus() {
+  const uniqueOutputs = [...new Set(state.outputs.filter(Boolean))];
+  if (!uniqueOutputs.length) {
+    els.midiStatus.textContent = "MIDI enabled • no output selected";
+    return;
+  }
+  const names = uniqueOutputs.map(output => output.name || output.manufacturer || "selected output");
+  els.midiStatus.textContent = `MIDI → ${names.join(" + ")} • ch 1`;
+}
+
+function refreshMidiOutputs() {
+  const outputs = midiPortsToArray(state.midiAccess?.outputs);
+
+  if (state.outputSelectionIds[0] === null) {
+    const preferred = outputs.find(output => /AUM/i.test(output.name || ""))
+      || outputs.find(output => /IDAM MIDI Host/i.test(output.name || ""))
+      || outputs[0]
+      || null;
+    state.outputSelectionIds[0] = preferred ? midiOutputId(preferred) : "";
+  }
+
+  if (state.outputSelectionIds[1] === null) {
+    const firstId = state.outputSelectionIds[0] || "";
+    const preferred = outputs.find(output =>
+      /IDAM MIDI Host/i.test(output.name || "") && midiOutputId(output) !== firstId
+    ) || outputs.find(output =>
+      /AUM/i.test(output.name || "") && midiOutputId(output) !== firstId
+    ) || null;
+    state.outputSelectionIds[1] = preferred ? midiOutputId(preferred) : "";
+  }
+
+  state.outputs = state.outputSelectionIds.map(id =>
+    outputs.find(output => midiOutputId(output) === String(id || "")) || null
+  );
+
+  populateMidiOutputSelect(els.midiOutputSelect, outputs, state.outputSelectionIds[0]);
+  populateMidiOutputSelect(els.midiOutputSelect2, outputs, state.outputSelectionIds[1]);
+  updateMidiStatus();
+}
+
+function selectOutput(slot, id) {
   stopAllNotes();
   const outputs = midiPortsToArray(state.midiAccess?.outputs);
-  state.output = outputs.find(output => String(output.id ?? output.name ?? "") === String(id)) || null;
-  els.midiStatus.textContent = state.output ? `MIDI → ${state.output.name || "selected output"} • ch 1` : "No MIDI output selected";
+  const selectedId = String(id || "");
+  state.outputSelectionIds[slot] = selectedId;
+
+  const otherSlot = slot === 0 ? 1 : 0;
+  if (selectedId && state.outputSelectionIds[otherSlot] === selectedId) {
+    state.outputSelectionIds[otherSlot] = "";
+  }
+
+  state.outputs = state.outputSelectionIds.map(selectionId =>
+    outputs.find(output => midiOutputId(output) === String(selectionId || "")) || null
+  );
+
+  els.midiOutputSelect.value = state.outputSelectionIds[0] || "";
+  els.midiOutputSelect2.value = state.outputSelectionIds[1] || "";
+  updateMidiStatus();
 }
-function sendRaw(bytes) { if (state.output && typeof state.output.send === "function") state.output.send(bytes); }
+
+function sendRaw(bytes) {
+  const sent = new Set();
+  for (const output of state.outputs) {
+    if (!output || typeof output.send !== "function" || sent.has(output)) continue;
+    output.send(bytes);
+    sent.add(output);
+  }
+}
 function sendNoteOn(note) { if (note >= 0 && note <= 127) sendRaw([0x90 | MIDI_CHANNEL, note & 0x7f, VELOCITY]); }
 function sendNoteOff(note) { if (note >= 0 && note <= 127) sendRaw([0x80 | MIDI_CHANNEL, note & 0x7f, 0]); }
 
@@ -598,7 +658,8 @@ async function exitSurfaceMode() {
 }
 
 els.enableMidiButton.addEventListener("click", enableMidi);
-els.midiOutputSelect.addEventListener("change", event => selectOutput(event.target.value));
+els.midiOutputSelect.addEventListener("change", event => selectOutput(0, event.target.value));
+els.midiOutputSelect2.addEventListener("change", event => selectOutput(1, event.target.value));
 els.trueScaleModeButton.addEventListener("click", () => setMode("trueScale"));
 els.fullBoardModeButton.addEventListener("click", () => setMode("fullBoard"));
 els.baseNoteSelect.addEventListener("change", event => setBaseNote(event.target.value));
