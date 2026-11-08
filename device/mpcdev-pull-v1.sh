@@ -44,6 +44,7 @@ incoming="$D/incoming/$id.sh"
 actual=$(sha256sum "$incoming"); actual=${actual%% *}
 [ "$actual" = "$approved" ] || fail 'copied release checksum mismatch'
 
+# Existing controller verifies again, runs self-test, and records previous version.
 sh "$D/mpcdev.sh" install "$id" "$approved"
 sh "$D/mpcdev.sh" test
 if [ "$mode" = run ]; then
