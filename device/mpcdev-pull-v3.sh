@@ -21,6 +21,7 @@ for sub in incoming releases state; do
   [ -d "$D/$sub" ] && [ ! -L "$D/$sub" ] || fail "invalid $sub directory"
 done
 [ -r /proc/sys/kernel/random/uuid ] || fail 'Linux UUID generator unavailable'
+
 lock="$D/incoming/.github-pull.lock"
 mkdir "$lock" 2>/dev/null || fail 'pull busy; inspect incoming/.github-pull.lock'
 cleanup() { rm -f "$lock/download"; rmdir "$lock"; }
@@ -65,7 +66,6 @@ incoming="$D/incoming/$id.sh"
 actual=$(sha256sum "$incoming"); actual=${actual%% *}
 [ "$actual" = "$approved" ] || fail 'copied release checksum mismatch'
 
-# Existing controller verifies again, runs self-test, and records previous version.
 sh "$D/mpcdev.sh" install "$id" "$approved"
 sh "$D/mpcdev.sh" test
 if [ "$mode" = run ]; then
