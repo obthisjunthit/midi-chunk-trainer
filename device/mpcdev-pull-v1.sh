@@ -1,7 +1,8 @@
 #!/bin/sh
 # MPCDev pull v1: fetch a published release from the user's fixed public GitHub repo.
-# Authenticity requires the independently approved SHA256 from iPhone HTTPS.
-# Preserves the existing MPCDev controller, rollback, and firmware.
+# Never trusts HTTPS provided by the MPC's wget for authenticity: SHA256 is supplied
+# independently by the iPhone over SSH after iPhone HTTPS retrieval and user approval.
+# No firmware updates, startup hooks, or replacement of the existing MPCDev controller.
 set -eu
 umask 077
 
@@ -35,7 +36,7 @@ wget -q -O "$lock/download" "$URL" || fail 'download failed (verify MPC Wi-Fi an
 bytes=$(busybox wc -c < "$lock/download")
 [ "$bytes" -gt 0 ] && [ "$bytes" -le 10485760 ] || fail 'release must be between 1 byte and 10 MiB'
 actual=$(sha256sum "$lock/download"); actual=${actual%% *}
-[ "$actual" = "$approved" ] || fail 'digest mismatch: release differs from iPhone-approved copy; nothing executed'
+[ "$actual" = "$approved" ] || fail 'digest mismatch: GitHub release differs from iPhone-approved copy; nothing executed'
 sh -n "$lock/download" || fail 'shell syntax check failed'
 incoming="$D/incoming/$id.sh"
 [ ! -e "$incoming" ] && [ ! -L "$incoming" ] || fail 'release ID collision'
