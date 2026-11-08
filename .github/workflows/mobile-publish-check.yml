@@ -1,0 +1,16 @@
+name: MPCDev mobile publish checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate publish artifacts
+        run: sh tests/mobile-publish-check.sh
+      - name: Verify MPCDev controller behaviors
+        run: sh tests/smoke.sh
