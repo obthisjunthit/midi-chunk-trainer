@@ -1,0 +1,11 @@
+# Release contract and limits
+
+- POSIX sh and available BusyBox-style tools only on the ARMv7 target; no compiled binaries in the first release. Cloud tests are Linux shell simulations, not tests on MPC hardware or modified MPC OS.
+- Payload implements `test` and `run`. Test must be harmless, deterministic, and read-only; run must terminate promptly for this initial workflow. No background tasks, firmware, critical system files, init scripts, mounts, audio-engine changes, or reboot commands.
+- Every new candidate needs a unique release ID, source review, an independently approved SHA256, and explicit human deployment approval. Approval of one release does not authorize future ones.
+- SHA256 detects changes relative to the trusted approved value; it is not a signature. An attacker able to modify both installed code and hashes can bypass it. Root SSH and payloads are not sandboxed. Never execute unreviewed AI output as root.
+- Companion installation verifies a staged copy, tests it, keeps old releases, and atomically renames `state/current` on the same filesystem. Readers and writers are serialized by a lock. All helper invocations must use the same root. It does not alter the existing controller's active references.
+- Reference rename gives process-level atomicity; SD-card/filesystem failure or sudden power loss is not a transactional durability guarantee. Avoid deploying during shutdown and retain backups. Payload tests can have side effects if their author violates this contract; the controller cannot enforce read-only behavior.
+- Rollback switches the reference only; it executes no payload and does not undo external writes, data migrations, or already running processes. This system initially supports small, foreground, stateless scripts only. A future service needs a separately reviewed stop/start and health-check contract.
+- No tar is extracted on the MPC: fixed single-file payloads avoid archive traversal and symlink entries. Files/directories managed by this controller must not be modified concurrently by another controller or SSH session. Preserve existing incoming/releases/logs contents.
+- If a first release fails, there is no previous version: do not run it again until inspected. An install self-test failure prevents activation; a later run failure leaves the reference available for diagnosis and explicit rollback.

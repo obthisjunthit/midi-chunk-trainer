@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Tiny reviewed MPCDev deployment outputs are included for handoff.
+!dist/
+!dist/mpcdev.sh
+!dist/hello-001.sh
+!dist/SHA256SUMS
+!dist/MPCDev-hello-001.zip
+!dist/MPCDev-hello-001.zip.sha256
