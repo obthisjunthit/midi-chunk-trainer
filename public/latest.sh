@@ -4,10 +4,10 @@
 # Does not integrate audio with MPC. Has detached cleanup watchdog.
 set -u
 M=/sys/devices/platform/usb-mux/state
-G=/sys/kernel/config/usb_gadget/keysystem_probe_003
+G=/sys/kernel/config/usb_gadget/keysystem_probe_004
 UDC=ff580000.usb
 D=/sdcard/MPCDev
-L=$D/usb-enumeration-001.log
+L=$D/usb-midi-004.log
 
 log() { printf '%s\n' "$*" >> "$L"; }
 
@@ -38,8 +38,8 @@ prepare() {
     printf '0x01\n' > "$G/bDeviceProtocol" || return 1
     mkdir "$G/strings/0x409" || return 1
     printf 'Key System USB Test\n' > "$G/strings/0x409/manufacturer" || return 1
-    printf 'Key System MIDI Test\n' > "$G/strings/0x409/product" || return 1
-    printf 'KSUSB003\n' > "$G/strings/0x409/serialnumber" || return 1
+    printf 'Key System MIDI Test 004\n' > "$G/strings/0x409/product" || return 1
+    printf 'KSUSB004\n' > "$G/strings/0x409/serialnumber" || return 1
     mkdir "$G/configs/c.1" || return 1
     mkdir "$G/configs/c.1/strings/0x409" || return 1
     printf 'MIDI and Audio\n' > "$G/configs/c.1/strings/0x409/configuration" || return 1
@@ -61,7 +61,7 @@ prepare() {
 case "${1:-run}" in
     test)
         sh -n "$0" || exit 1
-        echo 'USB MIDI 003: syntax self-test passed; hardware not touched.'
+        echo 'USB MIDI 004: syntax self-test passed; hardware not touched.'
         ;;
     status)
         [ -r "$L" ] && cat "$L" || echo 'No enumeration test log yet.'
@@ -79,47 +79,60 @@ case "${1:-run}" in
         sleep 5
         log "Initial USB state: $(cat /sys/class/udc/$UDC/state 2>/dev/null || echo missing)"
         log "Initial USB speed: $(cat /sys/class/udc/$UDC/current_speed 2>/dev/null || echo missing)"
-        log 'Device: Key System MIDI Test. USB audio endpoints enumerated but not connected to MPC mixer.'
+        log 'Device: Key System MIDI Test 004. USB audio endpoints enumerated but not connected to MPC mixer.'
         log 'ALSA cards:'
         cat /proc/asound/cards >> "$L" 2>&1 || true
+        log 'ALSA device registry:'
+        cat /proc/asound/devices >> "$L" 2>&1 || true
+        log '/dev/snd MIDI nodes (type and permissions):'
+        ls -l /dev/snd/midiC* >> "$L" 2>&1 || true
+        log 'MIDI command tools:'
+        for cmd in amidi aplaymidi; do
+            command -v "$cmd" >> "$L" 2>&1 || true
+        done
         midi_card=$(awk '/MIDI Gadget|f_midi/ { print $1; exit }' /proc/asound/cards)
         case "$midi_card" in
             ''|*[!0-9]*)
-                log 'MIDI: no gadget raw MIDI card found; cannot transmit notes.'
-                sleep 50
+                log 'STOP MIDI: no ALSA MIDI Gadget card found.'
                 ;;
             *)
-                midi_dev="/dev/snd/midiC${midi_card}D0"
+                midi_dev="/dev/snd/midiC$(printf '%s' "$midi_card")D0"
                 if [ ! -c "$midi_dev" ]; then
-                    log "MIDI: gadget card $midi_card, but device $midi_dev missing."
-                    sleep 50
+                    log "STOP MIDI: $midi_dev is not a character device; refusing to create a regular file."
+                elif ! busybox --list 2>/dev/null | grep -qx timeout; then
+                    log 'STOP MIDI: busybox timeout unavailable; refusing an unbounded ALSA open.'
                 else
-                    log "MIDI: sending C4 (note 60), velocity 100, then note-off, every ~7 seconds to $midi_dev."
-                    n=0
-                    while [ "$n" -lt 7 ]; do
-                        if printf '\220\074\144' > "$midi_dev" 2>> "$L"; then
-                            log "MIDI note-on #$((n + 1)): sent"
+                    log "MIDI character device verified: $midi_dev"
+                    log 'Sending C4 note-on and note-off 3 times with 4-second maximum per attempt.'
+                    n=1
+                    while [ "$n" -le 3 ]; do
+                        if busybox timeout 4 sh -c '
+                            [ -c "$1" ] || exit 20
+                            exec 3>"$1" || exit 21
+                            printf "\220\074\144" >&3 || exit 22
+                            sleep 1
+                            printf "\200\074\000" >&3 || exit 23
+                            exec 3>&-
+                        ' sh "$midi_dev" >> "$L" 2>&1; then
+                            log "MIDI attempt $n: write completed (confirm reception in FL Studio)."
                         else
-                            log "MIDI note-on #$((n + 1)): write failed"
+                            rc=$?
+                            log "MIDI attempt $n: failed or timed out; exit=$rc."
                         fi
-                        sleep 1
-                        if printf '\200\074\000' > "$midi_dev" 2>> "$L"; then
-                            log "MIDI note-off #$((n + 1)): sent"
-                        else
-                            log "MIDI note-off #$((n + 1)): write failed"
-                        fi
-                        sleep 6
+                        sleep 3
                         n=$((n + 1))
                     done
                 fi
                 ;;
         esac
+        log 'MIDI diagnostic complete; leaving USB connected briefly for Mac inspection.'
+        sleep 12
         log "Final USB state: $(cat /sys/class/udc/$UDC/state 2>/dev/null || echo missing)"
         log "Final USB speed: $(cat /sys/class/udc/$UDC/current_speed 2>/dev/null || echo missing)"
         log 'Worker finished. Cleanup restoring internal mux and removing gadget.'
         ;;
     watchdog)
-        sleep 85
+        sleep 65
         cleanup
         ;;
     run)
@@ -146,10 +159,10 @@ case "${1:-run}" in
             grep -E '^/dev/sd[a-z]+[0-9]*[[:space:]]' /proc/mounts
             exit 1
         fi
-        log 'Starting 60-second USB-MIDI + MIDI enumeration test.'
+        log 'Starting USB MIDI 004 safe-write test (automatic restore).'
         nohup sh "$0" watchdog </dev/null >> "$L" 2>&1 &
         nohup sh "$0" worker </dev/null >> "$L" 2>&1 &
-        echo 'USB enumeration experiment started. For ~60 seconds, enable Key System MIDI Test in FL Studio MIDI settings and open an instrument. C4 is sent every ~7s.'
+        echo 'USB enumeration experiment started. For ~35 seconds, enable Key System MIDI Test 004 as an input in FL Studio and open an instrument. C4 will be attempted 3 times.'
         echo 'When finished, run MPCDev Run again to see results. Automatic restoration is scheduled.'
         ;;
     *) echo 'usage: payload.sh test|run|status|cleanup'; exit 2 ;;
