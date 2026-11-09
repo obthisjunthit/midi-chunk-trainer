@@ -41,7 +41,15 @@ jobs:
           test "$(head -c 4 public/key61-bridge/libmpc_usb_audio.so | od -An -tx1 | tr -d ' \n')" = "7f454c46"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add public/key61-bridge/
+          # The repository's inherited Python .gitignore excludes *.so.
+          # Force-stage the ARMv7 binary; never publish checksum without library.
+          git add public/key61-bridge/LICENSE public/key61-bridge/libmpc_usb_audio.so.sha256
+          git add -f public/key61-bridge/libmpc_usb_audio.so
+          git ls-files --error-unmatch public/key61-bridge/libmpc_usb_audio.so
+          git diff --cached --name-only | tee /tmp/key61-bridge-publish-files.txt
+          test -s public/key61-bridge/libmpc_usb_audio.so
+          test -f public/key61-bridge/libmpc_usb_audio.so.sha256
+          (cd public/key61-bridge && sha256sum -c libmpc_usb_audio.so.sha256)
           if ! git diff --cached --quiet; then
             git commit -m 'Publish pinned Key 61 ARMv7 USB audio+MIDI library'
             git push origin HEAD:main
