@@ -4,7 +4,7 @@
 # Does not integrate audio with MPC. Has detached cleanup watchdog.
 set -u
 M=/sys/devices/platform/usb-mux/state
-G=/sys/kernel/config/usb_gadget/keysystem_probe_001
+G=/sys/kernel/config/usb_gadget/keysystem_probe_002
 UDC=ff580000.usb
 D=/sdcard/MPCDev
 L=$D/usb-enumeration-001.log
@@ -39,7 +39,7 @@ prepare() {
     mkdir "$G/strings/0x409" || return 1
     printf 'Key System USB Test\n' > "$G/strings/0x409/manufacturer" || return 1
     printf 'Key System Audio MIDI Probe\n' > "$G/strings/0x409/product" || return 1
-    printf 'KSUSB001\n' > "$G/strings/0x409/serialnumber" || return 1
+    printf 'KSUSB002\n' > "$G/strings/0x409/serialnumber" || return 1
     mkdir "$G/configs/c.1" || return 1
     mkdir "$G/configs/c.1/strings/0x409" || return 1
     printf 'MIDI and Audio\n' > "$G/configs/c.1/strings/0x409/configuration" || return 1
@@ -61,7 +61,7 @@ prepare() {
 case "${1:-run}" in
     test)
         sh -n "$0" || exit 1
-        echo 'USB enumeration 001: syntax self-test passed; hardware not touched.'
+        echo 'USB enumeration 002: syntax self-test passed; hardware not touched.'
         ;;
     status)
         [ -r "$L" ] && cat "$L" || echo 'No enumeration test log yet.'
@@ -105,9 +105,12 @@ case "${1:-run}" in
         for g in /sys/kernel/config/usb_gadget/*; do
             [ -d "$g" ] && { echo 'STOP: another USB gadget is configured.'; exit 1; }
         done
-        if grep -qE ' /media/[^ ]+ ' /proc/mounts; then
-            echo 'STOP: removable USB media is mounted. Eject/unmount it before trying again.'
-            grep ' /media/' /proc/mounts
+        # /media also contains normal built-in MMC partitions. Check block
+        # device type instead of mount path; only /dev/sd* storage can be
+        # attached to this Key 61's muxed internal USB hub.
+        if grep -qE '^/dev/sd[a-z]+[0-9]*[[:space:]]' /proc/mounts; then
+            echo 'STOP: USB/SATA block storage is mounted. Safely eject it before testing.'
+            grep -E '^/dev/sd[a-z]+[0-9]*[[:space:]]' /proc/mounts
             exit 1
         fi
         log 'Starting 40-second USB-Audio + MIDI enumeration test.'
