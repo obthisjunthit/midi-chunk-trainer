@@ -1,0 +1,48 @@
+name: Build Key 61 USB audio + MIDI bridge (ARMv7)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bridge/patch_key61.py'
+      - '.github/workflows/key61-bridge-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  armv7-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+      - name: Build pinned MIT-licensed USB audio addin with Key 61 composite MIDI
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-tags https://github.com/jacob-sabella/mpc-addin-usb-audio.git upstream
+          cd upstream
+          git checkout --detach d0f1c4e13658f41429940af8f85111fbe378240f
+          python3 ../bridge/patch_key61.py
+          tools/build_armhf.sh
+      - name: Publish built library with checksum into repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/key61-bridge
+          cp upstream/build/armhf/libmpc_usb_audio.so public/key61-bridge/
+          cp upstream/LICENSE public/key61-bridge/LICENSE
+          (cd public/key61-bridge && sha256sum libmpc_usb_audio.so > libmpc_usb_audio.so.sha256)
+          file public/key61-bridge/libmpc_usb_audio.so
+          test "$(head -c 4 public/key61-bridge/libmpc_usb_audio.so | od -An -tx1 | tr -d ' \n')" = "7f454c46"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/key61-bridge/
+          if ! git diff --cached --quiet; then
+            git commit -m 'Publish pinned Key 61 ARMv7 USB audio+MIDI library'
+            git push origin HEAD:main
+          fi
