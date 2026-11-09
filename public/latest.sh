@@ -2,7 +2,7 @@
 # Key System: live USB audio + MIDI bridge for MPC Key 61 (ARMv7, MPC OS 3.x).
 # MIT-licensed audio engine derived from Jacob Sabella's mpc-addin-usb-audio v1.2.0.
 # This shell controller modifies ONLY /run systemd drop-ins + /sdcard files.
-# Automatic fallback after 240 s from service activation; reboot also clears /run.
+# Auto-keep a configured USB session for the current boot; rollback if USB never configures.
 set -u
 D=/sdcard/MPCDev/key61-bridge
 M=/sys/devices/platform/usb-mux/state
@@ -184,7 +184,7 @@ restore_midi_node() {
     return 1
 }
 worker() {
-    log 'Starting live PCM+MIDI bridge v002 with asynchronous MPC startup and readiness checks.'
+    log 'Starting live PCM+MIDI bridge v003: auto-keep ONLY on configured USB.'
     if ! download_lib; then rm -f "$ACTIVE"; return 1; fi
     if ! grep -q 'inmusic,acvm' /proc/device-tree/compatible 2>/dev/null; then
         log 'STOP: unsupported device tree.'
@@ -310,6 +310,17 @@ worker() {
         return 1
     fi
     : > "$READY"
+    # The user explicitly wants USB recognition retained, without racing a
+    # second iPhone SSH command against the watchdog. Never keep on mere spawn.
+    if [ -f "$ACTIVE" ] && [ ! -f "$CANCEL" ] && [ "$(cat "$U/state" 2>/dev/null)" = configured ]; then
+        : > "$KEEP"
+        log 'AUTO-KEEP SUCCESS: USB is configured; bridge stays until reboot or manual stop.'
+        log 'USB recognition is proven; audio transfer and physical pad/key MIDI still require routing.'
+    else
+        log 'FAIL: USB configuration disappeared before auto-keep; restoring.'
+        halt
+        return 1
+    fi
     log 'LIVE BRIDGE USB CONFIGURED. Check Mac Audio MIDI Setup and route audio in FL Studio.'
     log 'Audio transfer and MPC keyboard MIDI mapping are not yet confirmed.'
     log 'ALSA cards:'
@@ -319,7 +330,7 @@ worker() {
         log 'STOP: rollback occurred while MIDI endpoint was initializing.'
         return 1
     fi
-    log 'The watchdog will restore after 240 seconds unless kept.'
+    log 'Watchdog remains armed but USB-connected sessions are auto-kept for this boot.'
 }
 watchdog() {
     sleep 240
@@ -341,6 +352,12 @@ case "$1" in
         if [ -f "$ACTIVE" ]; then
             oldsvc=$(cat "$D/service" 2>/dev/null || true)
             if [ -n "$oldsvc" ] && [ -e "/run/systemd/system/$oldsvc.service.d/95-keysystem-usb-bridge.conf" ]; then
+                if [ -f "$READY" ] && [ "$(cat "$U/state" 2>/dev/null)" = configured ] && [ ! -f "$CANCEL" ]; then
+                    : > "$KEEP"
+                    log 'Session already configured: automatically kept active until reboot or manual stop.'
+                else
+                    log 'Session already initializing; not starting a second conflicting restart.'
+                fi
                 show
                 exit 0
             fi
@@ -359,8 +376,10 @@ case "$1" in
         : > "$ACTIVE"
         rm -f "$CANCEL" "$READY" || true
         nohup sh "$CONTROL" worker </dev/null >> "$LOG" 2>&1 &
-        echo 'LIVE BRIDGE STARTING: MPC will restart and USB-B will switch to Mac. Automatic recovery after 4 minutes unless kept.'
-        echo 'Tap MPCDev Run again to view logs. Manual undo: sh /sdcard/MPCDev/key61-bridge/control.sh stop'
+        echo 'USB BRIDGE RECONNECTING: starting MPC restart and Mac USB negotiation.'
+        echo 'It will AUTO-KEEP once USB is configured (until reboot/manual stop).'
+        echo 'If no USB configuration, watchdog restores MPC. See status for details.'
+        echo 'Manual undo: sh /sdcard/MPCDev/key61-bridge/control.sh stop'
         ;;
     status) show ;;
     keep)
