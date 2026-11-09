@@ -4,10 +4,11 @@
 # Does not integrate audio with MPC. Has detached cleanup watchdog.
 set -u
 M=/sys/devices/platform/usb-mux/state
-G=/sys/kernel/config/usb_gadget/keysystem_probe_004
+G=/sys/kernel/config/usb_gadget/keysystem_probe_005
 UDC=ff580000.usb
 D=/sdcard/MPCDev
-L=$D/usb-midi-004.log
+L=$D/usb-midi-005.log
+MARKER=$D/usb-midi-005-created-node
 
 log() { printf '%s\n' "$*" >> "$L"; }
 
@@ -25,6 +26,26 @@ cleanup() {
         rmdir "$G/strings/0x409" 2>/dev/null || true
         rmdir "$G" 2>/dev/null || true
     fi
+    # Remove only a character device that this release created, only after
+    # its ALSA gadget has disappeared from sysfs. Never remove vendor nodes.
+    if [ -f "$MARKER" ]; then
+        managed=$(cat "$MARKER" 2>/dev/null || true)
+        case "$managed" in
+            /dev/snd/midiC[0-9]*D0)
+                node_name=$(basename "$managed")
+                if [ ! -e "/sys/class/sound/$node_name/dev" ]; then
+                    if [ -c "$managed" ]; then
+                        rm -f "$managed" 2>/dev/null || true
+                        log "Cleanup: removed temporary MIDI character node $managed"
+                    fi
+                    rm -f "$MARKER" 2>/dev/null || true
+                else
+                    log "Cleanup: MIDI node $managed still registered; leaving it untouched."
+                fi
+                ;;
+            *) log 'Cleanup: unexpected marker contents; leaving device nodes untouched.' ;;
+        esac
+    fi
     log "Cleanup: mux=$(cat "$M" 2>/dev/null || echo missing); temporary gadget removed=$([ ! -e "$G" ] && echo yes || echo no)"
 }
 
@@ -38,8 +59,8 @@ prepare() {
     printf '0x01\n' > "$G/bDeviceProtocol" || return 1
     mkdir "$G/strings/0x409" || return 1
     printf 'Key System USB Test\n' > "$G/strings/0x409/manufacturer" || return 1
-    printf 'Key System MIDI Test 004\n' > "$G/strings/0x409/product" || return 1
-    printf 'KSUSB004\n' > "$G/strings/0x409/serialnumber" || return 1
+    printf 'Key System MIDI Test 005\n' > "$G/strings/0x409/product" || return 1
+    printf 'KSUSB005\n' > "$G/strings/0x409/serialnumber" || return 1
     mkdir "$G/configs/c.1" || return 1
     mkdir "$G/configs/c.1/strings/0x409" || return 1
     printf 'MIDI and Audio\n' > "$G/configs/c.1/strings/0x409/configuration" || return 1
@@ -61,7 +82,7 @@ prepare() {
 case "${1:-run}" in
     test)
         sh -n "$0" || exit 1
-        echo 'USB MIDI 004: syntax self-test passed; hardware not touched.'
+        echo 'USB MIDI 005: syntax self-test passed; hardware not touched.'
         ;;
     status)
         [ -r "$L" ] && cat "$L" || echo 'No enumeration test log yet.'
@@ -79,7 +100,7 @@ case "${1:-run}" in
         sleep 5
         log "Initial USB state: $(cat /sys/class/udc/$UDC/state 2>/dev/null || echo missing)"
         log "Initial USB speed: $(cat /sys/class/udc/$UDC/current_speed 2>/dev/null || echo missing)"
-        log 'Device: Key System MIDI Test 004. USB audio endpoints enumerated but not connected to MPC mixer.'
+        log 'Device: Key System MIDI Test 005. USB audio endpoints enumerated but not connected to MPC mixer.'
         log 'ALSA cards:'
         cat /proc/asound/cards >> "$L" 2>&1 || true
         log 'ALSA device registry:'
@@ -97,8 +118,51 @@ case "${1:-run}" in
                 ;;
             *)
                 midi_dev="/dev/snd/midiC$(printf '%s' "$midi_card")D0"
+                midi_sys="/sys/class/sound/midiC$(printf '%s' "$midi_card")D0/dev"
+                if [ -r "$midi_sys" ]; then
+                    log "Kernel MIDI device major:minor: $(cat "$midi_sys")"
+                else
+                    log "STOP MIDI: kernel device metadata missing at $midi_sys"
+                fi
+                if [ -r "$midi_sys" ] && [ ! -c "$midi_dev" ]; then
+                    # Test 003 accidentally made a three-byte ordinary file
+                    # at this path. Preserve it rather than deleting it.
+                    if [ -f "$midi_dev" ] && [ ! -L "$midi_dev" ]; then
+                        bytes=$(wc -c < "$midi_dev" | tr -d ' ')
+                        if [ "$bytes" = 3 ] && [ ! -e "$D/usb-midi-003-stale-placeholder.bin" ]; then
+                            if mv "$midi_dev" "$D/usb-midi-003-stale-placeholder.bin"; then
+                                log "Preserved stale three-byte test file as $D/usb-midi-003-stale-placeholder.bin"
+                            else
+                                log "STOP MIDI: could not preserve stale test file."
+                            fi
+                        else
+                            log "STOP MIDI: unexpected existing file at $midi_dev (bytes=$bytes); leaving it untouched."
+                        fi
+                    fi
+                    if [ ! -e "$midi_dev" ] && [ ! -L "$midi_dev" ]; then
+                        IFS=: read -r major minor < "$midi_sys"
+                        case "$major:$minor" in
+                            116:[0-9]*)
+                                case "$minor" in
+                                    *[!0-9]*|'') log 'STOP MIDI: invalid minor number.' ;;
+                                    *)
+                                        if mknod "$midi_dev" c "$major" "$minor"; then
+                                            printf '%s\n' "$midi_dev" > "$MARKER"
+                                            chmod 660 "$midi_dev" || true
+                                            chgrp audio "$midi_dev" 2>/dev/null || true
+                                            log "Reconstructed ALSA MIDI character device: $midi_dev ($major:$minor)"
+                                        else
+                                            log 'STOP MIDI: mknod failed.'
+                                        fi
+                                        ;;
+                                esac
+                                ;;
+                            *) log "STOP MIDI: untrusted ALSA major:minor '$major:$minor'; refusing mknod." ;;
+                        esac
+                    fi
+                fi
                 if [ ! -c "$midi_dev" ]; then
-                    log "STOP MIDI: $midi_dev is not a character device; refusing to create a regular file."
+                    log "STOP MIDI: $midi_dev is still not a character device; no notes sent."
                 elif ! busybox --list 2>/dev/null | grep -qx timeout; then
                     log 'STOP MIDI: busybox timeout unavailable; refusing an unbounded ALSA open.'
                 else
@@ -159,10 +223,10 @@ case "${1:-run}" in
             grep -E '^/dev/sd[a-z]+[0-9]*[[:space:]]' /proc/mounts
             exit 1
         fi
-        log 'Starting USB MIDI 004 safe-write test (automatic restore).'
+        log 'Starting USB MIDI 005 safe-write test (automatic restore).'
         nohup sh "$0" watchdog </dev/null >> "$L" 2>&1 &
         nohup sh "$0" worker </dev/null >> "$L" 2>&1 &
-        echo 'USB enumeration experiment started. For ~35 seconds, enable Key System MIDI Test 004 as an input in FL Studio and open an instrument. C4 will be attempted 3 times.'
+        echo 'USB enumeration experiment started. For ~35 seconds, enable Key System MIDI Test 005 as an input in FL Studio and open an instrument. C4 will be attempted 3 times.'
         echo 'When finished, run MPCDev Run again to see results. Automatic restoration is scheduled.'
         ;;
     *) echo 'usage: payload.sh test|run|status|cleanup'; exit 2 ;;
