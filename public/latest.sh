@@ -1,233 +1,286 @@
 #!/bin/sh
-# The Key System: TEMPORARY USB-B UAC2+MIDI enumeration experiment.
-# Only on verified Key 61 with usb-mux internal, zero existing gadgets, and no USB-mounted disks.
-# Does not integrate audio with MPC. Has detached cleanup watchdog.
+# Key System: live USB audio + MIDI bridge for MPC Key 61 (ARMv7, MPC OS 3.x).
+# MIT-licensed audio engine derived from Jacob Sabella's mpc-addin-usb-audio v1.2.0.
+# This shell controller modifies ONLY /run systemd drop-ins + /sdcard files.
+# Automatic fallback after 240 s unless explicitly kept. A reboot also clears /run.
 set -u
+D=/sdcard/MPCDev/key61-bridge
 M=/sys/devices/platform/usb-mux/state
-G=/sys/kernel/config/usb_gadget/keysystem_probe_005
-UDC=ff580000.usb
-D=/sdcard/MPCDev
-L=$D/usb-midi-005.log
-MARKER=$D/usb-midi-005-created-node
+G=/sys/kernel/config/usb_gadget/keysystembridge
+U=/sys/class/udc/ff580000.usb
+LIB=$D/libmpc_usb_audio.so
+LOG=$D/bridge.log
+BASE=https://raw.githubusercontent.com/obthisjunthit/midi-chunk-trainer/main/public/key61-bridge
+CONTROL=$D/control.sh
+MARK=$D/node-created-by-bridge
+KEEP=$D/keep
+ACTIVE=$D/active
 
-log() { printf '%s\n' "$*" >> "$L"; }
-
-cleanup() {
-    # Restore mux first so that the MPC retains internal controls and storage.
+log() { printf '%s\n' "$*" >> "$LOG"; }
+show() {
+    [ -f "$LOG" ] && tail -n 85 "$LOG" || echo 'No bridge log yet.'
+    printf 'mux: '; cat "$M" 2>/dev/null || true
+    printf 'USB state: '; cat "$U/state" 2>/dev/null || true
+    printf 'USB speed: '; cat "$U/current_speed" 2>/dev/null || true
+    if [ -f "$ACTIVE" ]; then echo 'Bridge session: active or initializing'; else echo 'Bridge session: inactive'; fi
+    if [ -f "$KEEP" ]; then echo 'Bridge session: confirmed to stay until reboot or manual stop'; fi
+    if [ -r "$D/usbaudio.log" ]; then
+        echo '=== MPC AUDIO ENGINE ==='
+        tail -n 35 "$D/usbaudio.log"
+    fi
+}
+halt() {
+    # Restore MPC access to the built-in USB hub before restarting its process.
     if [ -w "$M" ] && [ "$(cat "$M" 2>/dev/null)" = external ]; then
         printf 'internal\n' > "$M" 2>/dev/null || true
     fi
-    if [ -d "$G" ]; then
-        if [ -w "$G/UDC" ]; then printf '\n' > "$G/UDC" 2>/dev/null || true; fi
-        rm -f "$G/configs/c.1/midi.usb0" "$G/configs/c.1/uac2.usb0" 2>/dev/null || true
-        rmdir "$G/configs/c.1/strings/0x409" 2>/dev/null || true
-        rmdir "$G/configs/c.1" 2>/dev/null || true
-        rmdir "$G/functions/midi.usb0" "$G/functions/uac2.usb0" 2>/dev/null || true
-        rmdir "$G/strings/0x409" 2>/dev/null || true
-        rmdir "$G" 2>/dev/null || true
-    fi
-    # Remove only a character device that this release created, only after
-    # its ALSA gadget has disappeared from sysfs. Never remove vendor nodes.
-    if [ -f "$MARKER" ]; then
-        managed=$(cat "$MARKER" 2>/dev/null || true)
-        case "$managed" in
+    svc=$(cat "$D/service" 2>/dev/null || true)
+    case "$svc" in
+        acvs|inmusic-mpc)
+            drop=/run/systemd/system/$svc.service.d/95-keysystem-usb-bridge.conf
+            if [ -e "$drop" ]; then
+                rm -f "$drop" || true
+                systemctl daemon-reload || true
+                log 'Removed temporary LD_PRELOAD override; restarting MPC application.'
+                systemctl restart "$svc" >> "$LOG" 2>&1 || log 'WARNING: service restart failed; reboot to recover.'
+            fi
+            ;;
+    esac
+    if [ -f "$MARK" ]; then
+        node=$(cat "$MARK" 2>/dev/null || true)
+        case "$node" in
             /dev/snd/midiC[0-9]*D0)
-                node_name=$(basename "$managed")
-                if [ ! -e "/sys/class/sound/$node_name/dev" ]; then
-                    if [ -c "$managed" ]; then
-                        rm -f "$managed" 2>/dev/null || true
-                        log "Cleanup: removed temporary MIDI character node $managed"
-                    fi
-                    rm -f "$MARKER" 2>/dev/null || true
-                else
-                    log "Cleanup: MIDI node $managed still registered; leaving it untouched."
+                name=$(basename "$node")
+                if [ ! -e "/sys/class/sound/$name/dev" ] && [ -c "$node" ]; then
+                    rm -f "$node" 2>/dev/null || true
+                    log "Removed temporary MIDI node $node"
                 fi
                 ;;
-            *) log 'Cleanup: unexpected marker contents; leaving device nodes untouched.' ;;
         esac
+        rm -f "$MARK" || true
     fi
-    log "Cleanup: mux=$(cat "$M" 2>/dev/null || echo missing); temporary gadget removed=$([ ! -e "$G" ] && echo yes || echo no)"
+    rm -f "$ACTIVE" "$KEEP" || true
+    log "Recovery finished. mux=$(cat "$M" 2>/dev/null || true)"
 }
-
-prepare() {
-    mkdir "$G" || return 1
-    printf '0x1d6b\n' > "$G/idVendor" || return 1
-    printf '0x0104\n' > "$G/idProduct" || return 1
-    printf '0x0200\n' > "$G/bcdUSB" || return 1
-    printf '0xEF\n' > "$G/bDeviceClass" || return 1
-    printf '0x02\n' > "$G/bDeviceSubClass" || return 1
-    printf '0x01\n' > "$G/bDeviceProtocol" || return 1
-    mkdir "$G/strings/0x409" || return 1
-    printf 'Key System USB Test\n' > "$G/strings/0x409/manufacturer" || return 1
-    printf 'Key System MIDI Test 005\n' > "$G/strings/0x409/product" || return 1
-    printf 'KSUSB005\n' > "$G/strings/0x409/serialnumber" || return 1
-    mkdir "$G/configs/c.1" || return 1
-    mkdir "$G/configs/c.1/strings/0x409" || return 1
-    printf 'MIDI and Audio\n' > "$G/configs/c.1/strings/0x409/configuration" || return 1
-    mkdir "$G/functions/uac2.usb0" || return 1
-    printf '0x3\n' > "$G/functions/uac2.usb0/p_chmask" || return 1
-    printf '0x3\n' > "$G/functions/uac2.usb0/c_chmask" || return 1
-    printf '44100\n' > "$G/functions/uac2.usb0/p_srate" || return 1
-    printf '44100\n' > "$G/functions/uac2.usb0/c_srate" || return 1
-    printf '2\n' > "$G/functions/uac2.usb0/p_ssize" || return 1
-    printf '2\n' > "$G/functions/uac2.usb0/c_ssize" || return 1
-    mkdir "$G/functions/midi.usb0" || return 1
-    printf '1\n' > "$G/functions/midi.usb0/in_ports" || return 1
-    printf '1\n' > "$G/functions/midi.usb0/out_ports" || return 1
-    ln -s "$G/functions/uac2.usb0" "$G/configs/c.1/uac2.usb0" || return 1
-    ln -s "$G/functions/midi.usb0" "$G/configs/c.1/midi.usb0" || return 1
-    return 0
+download_lib() {
+    mkdir -p "$D" || return 1
+    if ! wget -q -O "$D/lib.sha256.new" "$BASE/libmpc_usb_audio.so.sha256"; then
+        log 'STOP: ARMv7 bridge build not yet published; no changes made to MPC.'
+        return 1
+    fi
+    if ! wget -q -O "$D/lib.new" "$BASE/libmpc_usb_audio.so"; then
+        log 'STOP: bridge library download failed; no changes made to MPC.'
+        return 1
+    fi
+    # The checksum is published by our pinned GitHub Actions ARMv7 build.
+    mv "$D/lib.new" "$LIB" || return 1
+    mv "$D/lib.sha256.new" "$D/lib.sha256" || return 1
+    if ! (cd "$D" && sha256sum -c lib.sha256) >> "$LOG" 2>&1; then
+        rm -f "$LIB"
+        log 'STOP: binary checksum mismatch.'
+        return 1
+    fi
+    if [ "$(od -An -tx1 -N4 "$LIB" | tr -d ' \n')" != 7f454c46 ]; then
+        log 'STOP: downloaded file is not ELF.'
+        return 1
+    fi
+    log 'Verified ARMv7 bridge library checksum.'
 }
-
-case "${1:-run}" in
+make_config() {
+    cat > "$D/usbaudio.conf" <<'CFG'
+enabled=1
+# PCM hooks tap the MPC's built-in ACVM codec (card 1), not USB keyboard card 0.
+tap_card=1
+rate=44100
+sample_bytes=2
+to_host=out1,out2
+host_channels=2
+to_mpc_in=host1,host2
+input_mode=sum
+target_frames=256
+fwd_period=64
+fwd_periods=4
+hs_bint=4
+test_tone=0
+gadget=standalone
+instance=usbaudio
+configfs=/sys/kernel/config/usb_gadget
+standalone_create=1
+own_gadget=keysystembridge
+own_wait=8
+hub_mux_check=0
+iad_class=1
+function_name=Key System 61 Bridge
+log=/sdcard/MPCDev/key61-bridge/usbaudio.log
+CFG
+}
+restore_midi_node() {
+    # Vendor devtmpfs sometimes lacks a node for newly-created f_midi.
+    i=0
+    while [ "$i" -lt 18 ]; do
+        card=$(awk '/MIDI Gadget|f_midi/ {print $1; exit}' /proc/asound/cards)
+        case "$card" in
+            ''|*[!0-9]*) sleep 1 ;;
+            *)
+                node=/dev/snd/midiC$(printf %s "$card")D0
+                sys=/sys/class/sound/midiC$(printf %s "$card")D0/dev
+                if [ -c "$node" ]; then log "MIDI device ready: $node"; return 0; fi
+                if [ -e "$node" ]; then
+                    log "MIDI node exists but is not a character device: $node; leaving untouched."
+                    return 1
+                fi
+                if [ -r "$sys" ]; then
+                    IFS=: read -r major minor < "$sys"
+                    case "$major:$minor" in
+                        116:[0-9]*)
+                            case "$minor" in
+                                *[!0-9]*|'') log "Bad MIDI minor: $minor"; return 1;;
+                                *)
+                                    if mknod "$node" c "$major" "$minor" 2>>"$LOG"; then
+                                        printf '%s\n' "$node" > "$MARK"
+                                        chmod 660 "$node" || true
+                                        chgrp audio "$node" 2>/dev/null || true
+                                        log "Reconstructed MIDI port $node ($major:$minor)"
+                                        return 0
+                                    fi
+                                    ;;
+                            esac ;;
+                    esac
+                fi
+                sleep 1
+                ;;
+        esac
+        i=$((i+1))
+    done
+    log 'MIDI endpoint registered but no working /dev/snd node was created.'
+    return 1
+}
+worker() {
+    log 'Starting live PCM+MIDI bridge. No firmware/rootfs changes.'
+    if ! download_lib; then rm -f "$ACTIVE"; return 1; fi
+    if ! grep -q 'inmusic,acvm' /proc/device-tree/compatible 2>/dev/null; then
+        log 'STOP: unsupported device tree.'
+        rm -f "$ACTIVE"; return 1
+    fi
+    if [ "$(cat "$M" 2>/dev/null)" != internal ]; then
+        log 'STOP: mux not internal.'
+        rm -f "$ACTIVE"; return 1
+    fi
+    if grep -qE '^/dev/sd[a-z]+[0-9]*[[:space:]]' /proc/mounts; then
+        log 'STOP: USB/SATA storage mounted; eject it and retry.'
+        rm -f "$ACTIVE"; return 1
+    fi
+    for g in /sys/kernel/config/usb_gadget/*; do
+        if [ -d "$g" ]; then
+            log "STOP: existing USB gadget $g; refusing to replace it."
+            rm -f "$ACTIVE"; return 1
+        fi
+    done
+    svc=
+    if systemctl cat acvs >/dev/null 2>&1; then svc=acvs
+    elif systemctl cat inmusic-mpc >/dev/null 2>&1; then svc=inmusic-mpc
+    else log 'STOP: MPC service not recognized'; rm -f "$ACTIVE"; return 1
+    fi
+    printf '%s\n' "$svc" > "$D/service"
+    make_config || { log 'STOP: cannot write config'; rm -f "$ACTIVE"; return 1; }
+    pid=$(pidof MPC 2>/dev/null | awk '{ print $1 }')
+    prior=
+    if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
+        prior=$(tr '\000' '\n' < "/proc/$pid/environ" | sed -n 's/^LD_PRELOAD=//p' | head -n1)
+    fi
+    # Protect any firmware/addin preloads. A runtime override is removed on reboot.
+    case "$prior" in
+        *'"'*|*'\\'*) log 'STOP: unsupported LD_PRELOAD characters'; rm -f "$ACTIVE"; return 1 ;;
+    esac
+    case ":$prior:" in *":$LIB:"*) newpre=$prior ;; *)
+        if [ -n "$prior" ]; then newpre=$prior:$LIB; else newpre=$LIB; fi ;;
+    esac
+    dropdir=/run/systemd/system/$svc.service.d
+    mkdir -p "$dropdir" || { log 'STOP: cannot make runtime drop-in'; rm -f "$ACTIVE"; return 1; }
+    drop=$dropdir/95-keysystem-usb-bridge.conf
+    if [ -e "$drop" ]; then log "STOP: runtime override already exists"; rm -f "$ACTIVE"; return 1; fi
+    {
+        echo '[Service]'
+        printf 'Environment="LD_PRELOAD=%s"\n' "$newpre"
+    } > "$drop" || { log 'STOP: cannot write runtime override'; rm -f "$ACTIVE"; return 1; }
+    log "Temporary MPC service override for $svc installed (clears on reboot)."
+    if ! systemctl daemon-reload >> "$LOG" 2>&1; then
+        log 'FAIL: daemon-reload'; halt; return 1
+    fi
+    # Put the USB-B physical hub on the computer before the addin creates its gadget.
+    if ! printf 'external\n' > "$M"; then
+        log 'FAIL: mux switch'; halt; return 1
+    fi
+    log 'Mux external; restarting MPC application to activate injected PCM hooks.'
+    if ! systemctl restart "$svc" >> "$LOG" 2>&1; then
+        log 'FAIL: MPC service restart'; halt; return 1
+    fi
+    # Some firmware toggles the mux back to internal on MPC restart.
+    if [ "$(cat "$M" 2>/dev/null)" = internal ]; then
+        printf 'external\n' > "$M" 2>> "$LOG" || true
+    fi
+    sleep 11
+    log "USB device state: $(cat "$U/state" 2>/dev/null || echo missing)"
+    log "USB negotiated speed: $(cat "$U/current_speed" 2>/dev/null || echo missing)"
+    log 'ALSA cards:'
+    cat /proc/asound/cards >> "$LOG" 2>&1 || true
+    restore_midi_node || true
+    log 'Full bridge trial running. In Mac Audio MIDI Setup choose Key System 61 Bridge; in FL Studio choose it as audio interface and MIDI port.'
+    log 'Unless kept, an independent watchdog will restore MPC after 240 seconds.'
+}
+watchdog() {
+    sleep 240
+    if [ -f "$KEEP" ]; then
+        log 'Full bridge kept active for this boot; no automatic rollback.'
+    elif [ -f "$ACTIVE" ]; then
+        log 'Fallback deadline reached. Reverting the full bridge.'
+        halt
+    fi
+}
+if [ "$#" -eq 0 ]; then set -- run; fi
+case "$1" in
     test)
         sh -n "$0" || exit 1
-        echo 'USB MIDI 005: syntax self-test passed; hardware not touched.'
-        ;;
-    status)
-        [ -r "$L" ] && cat "$L" || echo 'No enumeration test log yet.'
-        ;;
-    cleanup)
-        cleanup
-        ;;
-    worker)
-        trap 'cleanup' 0 1 2 3 15
-        log 'Worker starting; preparing temporary USB audio + MIDI gadget.'
-        if ! prepare; then log 'FAIL: configfs gadget creation'; exit 1; fi
-        if ! printf 'external\n' > "$M"; then log 'FAIL: usb mux switch'; exit 1; fi
-        log "Mux switched external. Binding gadget to $UDC."
-        if ! printf '%s\n' "$UDC" > "$G/UDC"; then log 'FAIL: bind gadget'; exit 1; fi
-        sleep 5
-        log "Initial USB state: $(cat /sys/class/udc/$UDC/state 2>/dev/null || echo missing)"
-        log "Initial USB speed: $(cat /sys/class/udc/$UDC/current_speed 2>/dev/null || echo missing)"
-        log 'Device: Key System MIDI Test 005. USB audio endpoints enumerated but not connected to MPC mixer.'
-        log 'ALSA cards:'
-        cat /proc/asound/cards >> "$L" 2>&1 || true
-        log 'ALSA device registry:'
-        cat /proc/asound/devices >> "$L" 2>&1 || true
-        log '/dev/snd MIDI nodes (type and permissions):'
-        ls -l /dev/snd/midiC* >> "$L" 2>&1 || true
-        log 'MIDI command tools:'
-        for cmd in amidi aplaymidi; do
-            command -v "$cmd" >> "$L" 2>&1 || true
-        done
-        midi_card=$(awk '/MIDI Gadget|f_midi/ { print $1; exit }' /proc/asound/cards)
-        case "$midi_card" in
-            ''|*[!0-9]*)
-                log 'STOP MIDI: no ALSA MIDI Gadget card found.'
-                ;;
-            *)
-                midi_dev="/dev/snd/midiC$(printf '%s' "$midi_card")D0"
-                midi_sys="/sys/class/sound/midiC$(printf '%s' "$midi_card")D0/dev"
-                if [ -r "$midi_sys" ]; then
-                    log "Kernel MIDI device major:minor: $(cat "$midi_sys")"
-                else
-                    log "STOP MIDI: kernel device metadata missing at $midi_sys"
-                fi
-                if [ -r "$midi_sys" ] && [ ! -c "$midi_dev" ]; then
-                    # Test 003 accidentally made a three-byte ordinary file
-                    # at this path. Preserve it rather than deleting it.
-                    if [ -f "$midi_dev" ] && [ ! -L "$midi_dev" ]; then
-                        bytes=$(wc -c < "$midi_dev" | tr -d ' ')
-                        if [ "$bytes" = 3 ] && [ ! -e "$D/usb-midi-003-stale-placeholder.bin" ]; then
-                            if mv "$midi_dev" "$D/usb-midi-003-stale-placeholder.bin"; then
-                                log "Preserved stale three-byte test file as $D/usb-midi-003-stale-placeholder.bin"
-                            else
-                                log "STOP MIDI: could not preserve stale test file."
-                            fi
-                        else
-                            log "STOP MIDI: unexpected existing file at $midi_dev (bytes=$bytes); leaving it untouched."
-                        fi
-                    fi
-                    if [ ! -e "$midi_dev" ] && [ ! -L "$midi_dev" ]; then
-                        IFS=: read -r major minor < "$midi_sys"
-                        case "$major:$minor" in
-                            116:[0-9]*)
-                                case "$minor" in
-                                    *[!0-9]*|'') log 'STOP MIDI: invalid minor number.' ;;
-                                    *)
-                                        if mknod "$midi_dev" c "$major" "$minor"; then
-                                            printf '%s\n' "$midi_dev" > "$MARKER"
-                                            chmod 660 "$midi_dev" || true
-                                            chgrp audio "$midi_dev" 2>/dev/null || true
-                                            log "Reconstructed ALSA MIDI character device: $midi_dev ($major:$minor)"
-                                        else
-                                            log 'STOP MIDI: mknod failed.'
-                                        fi
-                                        ;;
-                                esac
-                                ;;
-                            *) log "STOP MIDI: untrusted ALSA major:minor '$major:$minor'; refusing mknod." ;;
-                        esac
-                    fi
-                fi
-                if [ ! -c "$midi_dev" ]; then
-                    log "STOP MIDI: $midi_dev is still not a character device; no notes sent."
-                elif ! busybox --list 2>/dev/null | grep -qx timeout; then
-                    log 'STOP MIDI: busybox timeout unavailable; refusing an unbounded ALSA open.'
-                else
-                    log "MIDI character device verified: $midi_dev"
-                    log 'Sending C4 note-on and note-off 3 times with 4-second maximum per attempt.'
-                    n=1
-                    while [ "$n" -le 3 ]; do
-                        if busybox timeout 4 sh -c '
-                            [ -c "$1" ] || exit 20
-                            exec 3>"$1" || exit 21
-                            printf "\220\074\144" >&3 || exit 22
-                            sleep 1
-                            printf "\200\074\000" >&3 || exit 23
-                            exec 3>&-
-                        ' sh "$midi_dev" >> "$L" 2>&1; then
-                            log "MIDI attempt $n: write completed (confirm reception in FL Studio)."
-                        else
-                            rc=$?
-                            log "MIDI attempt $n: failed or timed out; exit=$rc."
-                        fi
-                        sleep 3
-                        n=$((n + 1))
-                    done
-                fi
-                ;;
-        esac
-        log 'MIDI diagnostic complete; leaving USB connected briefly for Mac inspection.'
-        sleep 12
-        log "Final USB state: $(cat /sys/class/udc/$UDC/state 2>/dev/null || echo missing)"
-        log "Final USB speed: $(cat /sys/class/udc/$UDC/current_speed 2>/dev/null || echo missing)"
-        log 'Worker finished. Cleanup restoring internal mux and removing gadget.'
-        ;;
-    watchdog)
-        sleep 65
-        cleanup
+        echo 'Key System live USB bridge: syntax passed; hardware not touched.'
         ;;
     run)
         mkdir -p "$D" || exit 1
-        if [ -s "$L" ]; then
-            cat "$L"
-            exit 0
+        if [ -f "$ACTIVE" ]; then
+            oldsvc=$(cat "$D/service" 2>/dev/null || true)
+            if [ -n "$oldsvc" ] && [ -e "/run/systemd/system/$oldsvc.service.d/95-keysystem-usb-bridge.conf" ]; then
+                show
+                exit 0
+            fi
+            # /run is reset on reboot; don't misreport a stale SD-card marker.
+            rm -f "$ACTIVE" "$KEEP" || true
         fi
-        : > "$L" || exit 1
-        [ -w "$M" ] || { echo 'STOP: USB mux is not writable.'; exit 1; }
-        [ "$(cat "$M")" = internal ] || { echo 'STOP: mux is not internal.'; exit 1; }
-        grep -q 'inmusic,acvm' /proc/device-tree/compatible 2>/dev/null || {
-            echo 'STOP: not verified Key 61 hardware'; exit 1;
-        }
-        [ ! -e "$G" ] || { echo 'STOP: test gadget already exists.'; exit 1; }
-        for g in /sys/kernel/config/usb_gadget/*; do
-            [ -d "$g" ] && { echo 'STOP: another USB gadget is configured.'; exit 1; }
-        done
-        # /media also contains normal built-in MMC partitions. Check block
-        # device type instead of mount path; only /dev/sd* storage can be
-        # attached to this Key 61's muxed internal USB hub.
-        if grep -qE '^/dev/sd[a-z]+[0-9]*[[:space:]]' /proc/mounts; then
-            echo 'STOP: USB/SATA block storage is mounted. Safely eject it before testing.'
-            grep -E '^/dev/sd[a-z]+[0-9]*[[:space:]]' /proc/mounts
-            exit 1
+        if [ -f "$D/service" ]; then
+            svc=$(cat "$D/service" 2>/dev/null || true)
+            if [ ! -e "/run/systemd/system/$svc.service.d/95-keysystem-usb-bridge.conf" ]; then
+                rm -f "$D/service" "$KEEP" || true
+            fi
         fi
-        log 'Starting USB MIDI 005 safe-write test (automatic restore).'
-        nohup sh "$0" watchdog </dev/null >> "$L" 2>&1 &
-        nohup sh "$0" worker </dev/null >> "$L" 2>&1 &
-        echo 'USB enumeration experiment started. For ~35 seconds, enable Key System MIDI Test 005 as an input in FL Studio and open an instrument. C4 will be attempted 3 times.'
-        echo 'When finished, run MPCDev Run again to see results. Automatic restoration is scheduled.'
+        if [ "$0" != "$CONTROL" ]; then cp "$0" "$CONTROL" || exit 1; fi
+        : > "$LOG" || exit 1
+        rm -f "$KEEP"
+        : > "$ACTIVE"
+        nohup sh "$CONTROL" watchdog </dev/null >> "$LOG" 2>&1 &
+        nohup sh "$CONTROL" worker </dev/null >> "$LOG" 2>&1 &
+        echo 'LIVE BRIDGE STARTING: MPC will restart and USB-B will switch to Mac. Automatic recovery after 4 minutes unless kept.'
+        echo 'Tap MPCDev Run again to view logs. Manual undo: sh /sdcard/MPCDev/key61-bridge/control.sh stop'
         ;;
-    *) echo 'usage: payload.sh test|run|status|cleanup'; exit 2 ;;
+    status) show ;;
+    keep)
+        [ -f "$ACTIVE" ] || { echo 'No bridge session to keep.'; exit 1; }
+        : > "$KEEP"
+        log 'User kept full bridge active for this boot.'
+        echo 'Full bridge will remain active until reboot or manual stop (runtime-only service override).'
+        ;;
+    stop|rollback)
+        halt
+        show
+        ;;
+    worker) worker ;;
+    watchdog) watchdog ;;
+    *) echo 'Usage: control.sh run|status|keep|stop|test'; exit 2 ;;
 esac
