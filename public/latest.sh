@@ -184,7 +184,7 @@ restore_midi_node() {
     return 1
 }
 worker() {
-    log 'Starting live PCM+MIDI bridge v003: auto-keep ONLY on configured USB.'
+    log 'Starting live PCM+MIDI bridge v004: reclaim only owned USB gadget; auto-keep when configured.'
     if ! download_lib; then rm -f "$ACTIVE"; return 1; fi
     if ! grep -q 'inmusic,acvm' /proc/device-tree/compatible 2>/dev/null; then
         log 'STOP: unsupported device tree.'
@@ -198,10 +198,17 @@ worker() {
         log 'STOP: USB/SATA storage mounted; eject it and retry.'
         rm -f "$ACTIVE"; return 1
     fi
+    # The library's startup constructor reclaims its own leftover configfs
+    # gadget after a crashed/stopped prior session. It is safe to allow that
+    # exact name through; never touch gadgets owned by MPC or other addins.
     for g in /sys/kernel/config/usb_gadget/*; do
         if [ -d "$g" ]; then
-            log "STOP: existing USB gadget $g; refusing to replace it."
-            rm -f "$ACTIVE"; return 1
+            if [ "$g" = "$G" ]; then
+                log "Found our own USB gadget from a previous attempt; library will reclaim it during MPC restart."
+            else
+                log "STOP: unrelated USB gadget $g is present; refusing to replace it."
+                rm -f "$ACTIVE"; return 1
+            fi
         fi
     done
     svc=
