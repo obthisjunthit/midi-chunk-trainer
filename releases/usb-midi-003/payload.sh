@@ -97,13 +97,13 @@ case "${1:-run}" in
                     log "MIDI: sending C4 (note 60), velocity 100, then note-off, every ~7 seconds to $midi_dev."
                     n=0
                     while [ "$n" -lt 7 ]; do
-                        if printf '\\220\\074\\144' > "$midi_dev" 2>> "$L"; then
+                        if printf '\220\074\144' > "$midi_dev" 2>> "$L"; then
                             log "MIDI note-on #$((n + 1)): sent"
                         else
                             log "MIDI note-on #$((n + 1)): write failed"
                         fi
                         sleep 1
-                        if printf '\\200\\074\\000' > "$midi_dev" 2>> "$L"; then
+                        if printf '\200\074\000' > "$midi_dev" 2>> "$L"; then
                             log "MIDI note-off #$((n + 1)): sent"
                         else
                             log "MIDI note-off #$((n + 1)): write failed"
