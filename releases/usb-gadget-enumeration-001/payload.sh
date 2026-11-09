@@ -58,7 +58,7 @@ prepare() {
     return 0
 }
 
-case "\${1:-run}" in
+case "${1:-run}" in
     test)
         sh -n "$0" || exit 1
         echo 'USB enumeration 001: syntax self-test passed; hardware not touched.'
