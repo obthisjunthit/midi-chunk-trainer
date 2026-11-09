@@ -245,7 +245,15 @@ case "$1" in
         ;;
     run)
         mkdir -p "$D" || exit 1
-        if [ -f "$ACTIVE" ]; then show; exit 0; fi
+        if [ -f "$ACTIVE" ]; then
+            oldsvc=$(cat "$D/service" 2>/dev/null || true)
+            if [ -n "$oldsvc" ] && [ -e "/run/systemd/system/$oldsvc.service.d/95-keysystem-usb-bridge.conf" ]; then
+                show
+                exit 0
+            fi
+            # /run is reset on reboot; don't misreport a stale SD-card marker.
+            rm -f "$ACTIVE" "$KEEP" || true
+        fi
         if [ -f "$D/service" ]; then
             svc=$(cat "$D/service" 2>/dev/null || true)
             if [ ! -e "/run/systemd/system/$svc.service.d/95-keysystem-usb-bridge.conf" ]; then
