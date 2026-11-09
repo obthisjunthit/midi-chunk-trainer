@@ -2,7 +2,7 @@
 # Key System: live USB audio + MIDI bridge for MPC Key 61 (ARMv7, MPC OS 3.x).
 # MIT-licensed audio engine derived from Jacob Sabella's mpc-addin-usb-audio v1.2.0.
 # This shell controller modifies ONLY /run systemd drop-ins + /sdcard files.
-# Automatic fallback after 240 s unless explicitly kept. A reboot also clears /run.
+# Automatic fallback after 240 s from service activation; reboot also clears /run.
 set -u
 D=/sdcard/MPCDev/key61-bridge
 M=/sys/devices/platform/usb-mux/state
@@ -15,6 +15,9 @@ CONTROL=$D/control.sh
 MARK=$D/node-created-by-bridge
 KEEP=$D/keep
 ACTIVE=$D/active
+CANCEL=$D/cancel
+READY=$D/ready
+LOCK=$D/rollback.lock
 
 log() { printf '%s\n' "$*" >> "$LOG"; }
 show() {
@@ -22,7 +25,24 @@ show() {
     printf 'mux: '; cat "$M" 2>/dev/null || true
     printf 'USB state: '; cat "$U/state" 2>/dev/null || true
     printf 'USB speed: '; cat "$U/current_speed" 2>/dev/null || true
-    if [ -f "$ACTIVE" ]; then echo 'Bridge session: active or initializing'; else echo 'Bridge session: inactive'; fi
+    if [ -f "$READY" ]; then
+        echo 'Bridge session: live USB configured; MPC audio still requires listening verification'
+    elif [ -f "$ACTIVE" ]; then
+        echo 'Bridge session: initialization in progress (not yet connected)'
+    else
+        echo 'Bridge session: inactive'
+    fi
+    if [ -f "$CANCEL" ]; then echo 'Bridge session: rollback requested'; fi
+    if [ -f "$D/service" ]; then
+        svc_show=$(cat "$D/service" 2>/dev/null || true)
+        case "$svc_show" in
+            acvs|inmusic-mpc)
+                systemctl is-active "$svc_show" 2>&1 || true
+                systemctl show "$svc_show" -p ActiveState -p SubState -p MainPID 2>&1 || true ;;
+        esac
+    fi
+    echo 'USB gadget status:'
+    ls /sys/kernel/config/usb_gadget 2>&1 || true
     if [ -f "$KEEP" ]; then echo 'Bridge session: confirmed to stay until reboot or manual stop'; fi
     if [ -r "$D/usbaudio.log" ]; then
         echo '=== MPC AUDIO ENGINE ==='
@@ -30,6 +50,11 @@ show() {
     fi
 }
 halt() {
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        log 'Recovery already running; no duplicate service restart.'
+        return 0
+    fi
+    : > "$CANCEL"
     # Restore MPC access to the built-in USB hub before restarting its process.
     if [ -w "$M" ] && [ "$(cat "$M" 2>/dev/null)" = external ]; then
         printf 'internal\n' > "$M" 2>/dev/null || true
@@ -42,7 +67,7 @@ halt() {
                 rm -f "$drop" || true
                 systemctl daemon-reload || true
                 log 'Removed temporary LD_PRELOAD override; restarting MPC application.'
-                systemctl restart "$svc" >> "$LOG" 2>&1 || log 'WARNING: service restart failed; reboot to recover.'
+                systemctl restart --no-block "$svc" >> "$LOG" 2>&1 || log 'WARNING: service restart request failed; reboot to recover.'
             fi
             ;;
     esac
@@ -59,8 +84,13 @@ halt() {
         esac
         rm -f "$MARK" || true
     fi
-    rm -f "$ACTIVE" "$KEEP" || true
+    # A previously blocked worker may have switched the mux mid-rollback.
+    if [ -w "$M" ] && [ "$(cat "$M" 2>/dev/null)" = external ]; then
+        printf 'internal\n' > "$M" 2>/dev/null || true
+    fi
+    rm -f "$ACTIVE" "$KEEP" "$READY" || true
     log "Recovery finished. mux=$(cat "$M" 2>/dev/null || true)"
+    rmdir "$LOCK" 2>/dev/null || true
 }
 download_lib() {
     mkdir -p "$D" || return 1
@@ -80,10 +110,8 @@ download_lib() {
         log 'STOP: binary checksum mismatch.'
         return 1
     fi
-    if [ "$(od -An -tx1 -N4 "$LIB" | tr -d ' \n')" != 7f454c46 ]; then
-        log 'STOP: downloaded file is not ELF.'
-        return 1
-    fi
+    # The SHA-256 is from our pinned ARMv7 CI build, which already checks ELF.
+    # BusyBox on this MPC lacks GNU od -An and head -c; do not recheck using them.
     log 'Verified ARMv7 bridge library checksum.'
 }
 make_config() {
@@ -107,7 +135,7 @@ instance=usbaudio
 configfs=/sys/kernel/config/usb_gadget
 standalone_create=1
 own_gadget=keysystembridge
-own_wait=8
+own_wait=45
 hub_mux_check=0
 iad_class=1
 function_name=Key System 61 Bridge
@@ -156,7 +184,7 @@ restore_midi_node() {
     return 1
 }
 worker() {
-    log 'Starting live PCM+MIDI bridge. No firmware/rootfs changes.'
+    log 'Starting live PCM+MIDI bridge v002 with asynchronous MPC startup and readiness checks.'
     if ! download_lib; then rm -f "$ACTIVE"; return 1; fi
     if ! grep -q 'inmusic,acvm' /proc/device-tree/compatible 2>/dev/null; then
         log 'STOP: unsupported device tree.'
@@ -204,29 +232,94 @@ worker() {
         printf 'Environment="LD_PRELOAD=%s"\n' "$newpre"
     } > "$drop" || { log 'STOP: cannot write runtime override'; rm -f "$ACTIVE"; return 1; }
     log "Temporary MPC service override for $svc installed (clears on reboot)."
+    # The timeout starts at service activation, not at launch/download.
+    nohup sh "$CONTROL" watchdog </dev/null >> "$LOG" 2>&1 &
+    log 'Applying temporary systemd configuration.'
     if ! systemctl daemon-reload >> "$LOG" 2>&1; then
         log 'FAIL: daemon-reload'; halt; return 1
     fi
-    # Put the USB-B physical hub on the computer before the addin creates its gadget.
+    if [ -f "$CANCEL" ] || [ ! -f "$ACTIVE" ]; then
+        log 'STOP: watchdog/rollback fired during daemon-reload. Aborting activation.'
+        return 1
+    fi
+    # Asynchronous restart: a blocking systemctl restart previously collided
+    # with the watchdog and allowed the worker to switch USB back afterward.
+    log 'Requesting non-blocking MPC application restart with patched audio library.'
+    if ! systemctl restart --no-block "$svc" >> "$LOG" 2>&1; then
+        log 'FAIL: MPC restart request'; halt; return 1
+    fi
+    # Keep the internal hub during startup. Only change mux after the MPC
+    # process actually has our native audio library mapped in memory.
+    i=0
+    loaded=no
+    while [ "$i" -lt 35 ]; do
+        if [ -f "$CANCEL" ] || [ ! -f "$ACTIVE" ]; then
+            log 'STOP: rollback requested while MPC was starting.'
+            return 1
+        fi
+        apppid=$(pidof MPC 2>/dev/null | awk '{print $1}')
+        if [ -n "$apppid" ] && [ -r "/proc/$apppid/maps" ] && grep -Fq "$LIB" "/proc/$apppid/maps"; then
+            loaded=yes
+            log "MPC PID $apppid loaded native audio bridge."
+            break
+        fi
+        sleep 1
+        i=$((i+1))
+    done
+    if [ "$loaded" != yes ]; then
+        log 'FAIL: MPC process did not load native audio bridge within 35 seconds. Reverting.'
+        if [ -r "$D/usbaudio.log" ]; then tail -n 30 "$D/usbaudio.log" >> "$LOG"; fi
+        halt
+        return 1
+    fi
+    if [ -f "$CANCEL" ] || [ ! -f "$ACTIVE" ]; then
+        log 'STOP: rollback requested before USB mux switch.'
+        return 1
+    fi
+    log 'MPC library loaded; switching USB mux external for Mac and waiting for gadget.'
     if ! printf 'external\n' > "$M"; then
-        log 'FAIL: mux switch'; halt; return 1
+        log 'FAIL: USB mux switch'; halt; return 1
     fi
-    log 'Mux external; restarting MPC application to activate injected PCM hooks.'
-    if ! systemctl restart "$svc" >> "$LOG" 2>&1; then
-        log 'FAIL: MPC service restart'; halt; return 1
-    fi
-    # Some firmware toggles the mux back to internal on MPC restart.
-    if [ "$(cat "$M" 2>/dev/null)" = internal ]; then
-        printf 'external\n' > "$M" 2>> "$LOG" || true
-    fi
-    sleep 11
+    i=0
+    connected=no
+    while [ "$i" -lt 45 ]; do
+        if [ -f "$CANCEL" ] || [ ! -f "$ACTIVE" ]; then
+            log 'STOP: rollback requested before USB configured.'
+            return 1
+        fi
+        if [ "$(cat "$U/state" 2>/dev/null)" = configured ]; then
+            connected=yes
+            break
+        fi
+        sleep 1
+        i=$((i+1))
+    done
     log "USB device state: $(cat "$U/state" 2>/dev/null || echo missing)"
     log "USB negotiated speed: $(cat "$U/current_speed" 2>/dev/null || echo missing)"
+    log 'ConfigFS USB gadget names:'
+    ls /sys/kernel/config/usb_gadget >> "$LOG" 2>&1 || true
+    if [ -r "$D/usbaudio.log" ]; then
+        log 'Native audio engine log:'
+        tail -n 40 "$D/usbaudio.log" >> "$LOG"
+    else
+        log 'WARNING: native audio engine log was not produced.'
+    fi
+    if [ "$connected" != yes ]; then
+        log 'FAIL: no configured USB gadget within 45 seconds after library loaded. Reverting.'
+        halt
+        return 1
+    fi
+    : > "$READY"
+    log 'LIVE BRIDGE USB CONFIGURED. Check Mac Audio MIDI Setup and route audio in FL Studio.'
+    log 'Audio transfer and MPC keyboard MIDI mapping are not yet confirmed.'
     log 'ALSA cards:'
     cat /proc/asound/cards >> "$LOG" 2>&1 || true
     restore_midi_node || true
-    log 'Full bridge trial running. In Mac Audio MIDI Setup choose Key System 61 Bridge; in FL Studio choose it as audio interface and MIDI port.'
-    log 'Unless kept, an independent watchdog will restore MPC after 240 seconds.'
+    if [ -f "$CANCEL" ] || [ ! -f "$ACTIVE" ]; then
+        log 'STOP: rollback occurred while MIDI endpoint was initializing.'
+        return 1
+    fi
+    log 'The watchdog will restore after 240 seconds unless kept.'
 }
 watchdog() {
     sleep 240
@@ -264,14 +357,17 @@ case "$1" in
         : > "$LOG" || exit 1
         rm -f "$KEEP"
         : > "$ACTIVE"
-        nohup sh "$CONTROL" watchdog </dev/null >> "$LOG" 2>&1 &
+        rm -f "$CANCEL" "$READY" || true
         nohup sh "$CONTROL" worker </dev/null >> "$LOG" 2>&1 &
         echo 'LIVE BRIDGE STARTING: MPC will restart and USB-B will switch to Mac. Automatic recovery after 4 minutes unless kept.'
         echo 'Tap MPCDev Run again to view logs. Manual undo: sh /sdcard/MPCDev/key61-bridge/control.sh stop'
         ;;
     status) show ;;
     keep)
-        [ -f "$ACTIVE" ] || { echo 'No bridge session to keep.'; exit 1; }
+        [ -f "$ACTIVE" ] && [ -f "$READY" ] && [ "$(cat "$U/state" 2>/dev/null)" = configured ] || {
+            echo 'Cannot keep an unconfigured or inactive USB bridge. It will roll back automatically.'
+            exit 1
+        }
         : > "$KEEP"
         log 'User kept full bridge active for this boot.'
         echo 'Full bridge will remain active until reboot or manual stop (runtime-only service override).'
